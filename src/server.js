@@ -43,7 +43,7 @@ app.get('/api/config', (_req, res) => {
       credential: process.env.TURN_PASSWORD,
     });
   }
-  res.json({ iceServers, discordClientId: process.env.DISCORD_CLIENT_ID ?? null });
+  res.json({ iceServers });
 });
 
 app.post('/api/rooms', (req, res) => {
@@ -60,6 +60,7 @@ app.get('/api/rooms/:id', (req, res) => {
     live: room.live,
     participants: room.participants.size,
     sharing: room.sharing.size,
+    voiceRoster: room.voiceRoster ?? [],
   });
 });
 

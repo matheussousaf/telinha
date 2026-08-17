@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { fetchRtcConfig, openSignaling, isStale, STALE_PAGE_MSG } from '../api.js';
 import Logo from '../components/Logo.jsx';
 import {
-  IconCheck, IconCrown, IconDiscord, IconGamepad, IconLink, IconLogout, IconMonitor,
+  IconCheck, IconCrown, IconGamepad, IconLink, IconLogout, IconMonitor,
   IconPip, IconScreenShare, IconStop, IconVolume, IconVolumeOff, IconX,
 } from '../components/icons.jsx';
 
@@ -57,8 +57,7 @@ export default function Room() {
   // --- UI state ---
   const [nameInput, setNameInput] = useState(localStorage.getItem('telinha:name') ?? '');
   const [joined, setJoined] = useState(false);
-  const [discordClientId, setDiscordClientId] = useState(null);
-  const myAvatar = useMemo(() => localStorage.getItem('telinha:avatar'), [joined]);
+  const [voiceRoster, setVoiceRoster] = useState([]);
   const [roomName, setRoomName] = useState('…');
   const [me, setMe] = useState(null);
   const [participants, setParticipants] = useState([]);
@@ -79,25 +78,34 @@ export default function Room() {
     document.title = `${roomName} — telinha`;
   }, [roomName]);
 
-  // Config early: the modal needs the Discord client id; the rtc config is
-  // reused when we actually join. Coming back from the Discord login, join
-  // straight away with the fetched profile.
+  // While the join screen is up, poll the room for the voice-channel roster
+  // (the bot mirrors who's in the voice call) so people can just click
+  // their own face instead of typing anything.
   useEffect(() => {
-    fetchRtcConfig().then((c) => {
-      rtcRef.current = c;
-      setDiscordClientId(c.discordClientId ?? null);
-    });
-    if (localStorage.getItem('telinha:autojoin') === '1') {
-      localStorage.removeItem('telinha:autojoin');
-      if ((localStorage.getItem('telinha:name') ?? '').trim()) setJoined(true);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (joined) return;
+    let cancelled = false;
+    const load = () =>
+      fetch(`/api/rooms/${roomId}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (cancelled || !data) return;
+          setVoiceRoster(data.voiceRoster ?? []);
+          setRoomName(data.name);
+        })
+        .catch(() => {});
+    load();
+    const timer = setInterval(load, 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [joined, roomId]);
 
-  function discordLogin() {
-    const redirect = encodeURIComponent(`${window.location.origin}/discord-callback`);
-    const state = encodeURIComponent(window.location.pathname + window.location.search);
-    window.location.href = `https://discord.com/oauth2/authorize?client_id=${discordClientId}&response_type=token&scope=identify&redirect_uri=${redirect}&state=${state}`;
+  function pickIdentity(member) {
+    localStorage.setItem('telinha:name', member.name);
+    localStorage.setItem('telinha:avatar', member.avatarUrl);
+    setNameInput(member.name);
+    setJoined(true);
   }
 
   useEffect(() => {
@@ -362,6 +370,7 @@ export default function Room() {
   function joinRoom() {
     const name = nameInput.trim();
     if (name) localStorage.setItem('telinha:name', name);
+    localStorage.removeItem('telinha:avatar'); // manual entry = no borrowed pfp
     setJoined(true);
   }
 
@@ -384,30 +393,37 @@ export default function Room() {
           <div className="flex items-center gap-2 text-fg1 font-bold mb-4">
             <Logo /> telinha
           </div>
-          {discordClientId && (
+          {voiceRoster.length > 0 && (
             <>
-              <button className="btn w-full" onClick={discordLogin}>
-                <IconDiscord size={16} /> Entrar com Discord
-              </button>
+              <p className="label mb-3">Quem é você? <span className="normal-case font-normal text-fg4">(do canal de voz)</span></p>
+              <div className="grid grid-cols-3 gap-2 mb-4">
+                {voiceRoster.map((m) => (
+                  <button
+                    key={m.name + m.avatarUrl}
+                    className="flex flex-col items-center gap-1.5 bg-bg0 border border-line rounded-lg p-3 cursor-pointer hover:border-blurple transition-colors"
+                    onClick={() => pickIdentity(m)}
+                  >
+                    <img src={m.avatarUrl} alt="" className="w-12 h-12 rounded-full" referrerPolicy="no-referrer" />
+                    <span className="text-fg2 text-[12px] max-w-full truncate">{m.name}</span>
+                  </button>
+                ))}
+              </div>
               <div className="flex items-center gap-3 my-4 text-fg4 text-xs">
-                <span className="flex-1 h-px bg-line" /> ou <span className="flex-1 h-px bg-line" />
+                <span className="flex-1 h-px bg-line" /> não tô na lista <span className="flex-1 h-px bg-line" />
               </div>
             </>
           )}
           <label className="label" htmlFor="name">Como te chamam?</label>
-          <div className="flex items-center gap-2">
-            {myAvatar && <img src={myAvatar} alt="" className="w-10 h-10 rounded-full flex-none" referrerPolicy="no-referrer" />}
-            <input
-              id="name"
-              className="input"
-              type="text"
-              placeholder="seu nome ou apelido"
-              maxLength={32}
-              value={nameInput}
-              onChange={(e) => setNameInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && joinRoom()}
-            />
-          </div>
+          <input
+            id="name"
+            className="input"
+            type="text"
+            placeholder="seu nome ou apelido"
+            maxLength={32}
+            value={nameInput}
+            onChange={(e) => setNameInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && joinRoom()}
+          />
           <button className="btn btn-secondary w-full mt-4" onClick={joinRoom}>Entrar na sala</button>
           <p className="text-fg4 text-xs mt-3 mb-0">
             Sem cadastro — nome e foto aparecem só pra quem tá na sala, e nada fica salvo no servidor.

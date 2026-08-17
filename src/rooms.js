@@ -24,6 +24,8 @@ function persist() {
     streamKey: r.streamKey,
     createdAt: r.createdAt,
     lastActiveAt: r.lastActiveAt,
+    voiceChannelId: r.voiceChannelId ?? null,
+    guildId: r.guildId ?? null,
   }));
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -37,6 +39,9 @@ function hydrate(shell) {
   return {
     ...shell,
     lastActiveAt: shell.lastActiveAt ?? shell.createdAt,
+    voiceChannelId: shell.voiceChannelId ?? null,
+    guildId: shell.guildId ?? null,
+    voiceRoster: [], // RAM only — refreshed by the bot from the voice channel
     game: null,
     gameIconUrl: null,
     live: false,
@@ -65,7 +70,7 @@ function readableId() {
   return `${pick(ADJECTIVES)}-${pick(NOUNS)}-${crypto.randomInt(1000, 10000)}`;
 }
 
-export function createRoom(name = 'stream') {
+export function createRoom(name = 'stream', meta = {}) {
   let id;
   do {
     id = readableId();
@@ -77,6 +82,8 @@ export function createRoom(name = 'stream') {
     streamKey: crypto.randomBytes(16).toString('base64url'),
     createdAt: Date.now(),
     lastActiveAt: Date.now(),
+    voiceChannelId: meta.voiceChannelId ?? null,
+    guildId: meta.guildId ?? null,
   });
   rooms.set(room.id, room);
   persist();
@@ -85,6 +92,10 @@ export function createRoom(name = 'stream') {
 
 export function getRoom(id) {
   return rooms.get(id);
+}
+
+export function listRooms() {
+  return [...rooms.values()];
 }
 
 export function touchRoom(room) {

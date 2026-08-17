@@ -9,7 +9,7 @@ import {
   GatewayIntentBits,
   MessageFlags,
 } from 'discord.js';
-import { createRoom, getRoom, roomEvents } from './rooms.js';
+import { createRoom, getRoom, listRooms, roomEvents } from './rooms.js';
 import { notifyRoomInfo } from './signaling.js';
 import { BASE_URL, describeRoom } from './server.js';
 
@@ -44,7 +44,10 @@ export function startBot() {
 function createClient(intents) {
   const client = new Client({ intents });
 
-  client.once(Events.ClientReady, (c) => console.log(`[bot] logged in as ${c.user.tag}`));
+  client.once(Events.ClientReady, (c) => {
+    console.log(`[bot] logged in as ${c.user.tag}`);
+    startVoiceRosterUpdater(c);
+  });
 
   client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isChatInputCommand() || interaction.commandName !== 'telinha') return;
@@ -73,6 +76,29 @@ function createClient(intents) {
   });
 
   return client;
+}
+
+// Mirrors "who is in the room's voice channel right now" into room.voiceRoster
+// (RAM only) so the web join screen can offer a click-your-own-face picker.
+function rosterFromChannel(channel) {
+  return [...channel.members.values()].slice(0, 20).map((m) => ({
+    name: m.displayName.slice(0, 32),
+    avatarUrl: m.displayAvatarURL({ size: 128, extension: 'png' }),
+  }));
+}
+
+let rosterTimer = null;
+
+function startVoiceRosterUpdater(client) {
+  clearInterval(rosterTimer);
+  rosterTimer = setInterval(() => {
+    for (const room of listRooms()) {
+      if (!room.voiceChannelId) continue;
+      const channel = client.channels.cache.get(room.voiceChannelId);
+      if (channel?.isVoiceBased?.()) room.voiceRoster = rosterFromChannel(channel);
+    }
+  }, 10_000);
+  rosterTimer.unref?.();
 }
 
 let roomEventsWired = false;
@@ -134,9 +160,14 @@ async function handleTelinha(interaction) {
     (game ? game.name : null) ??
     `sala de ${interaction.user.displayName}`;
 
-  const room = createRoom(title);
+  const voiceChannel = interaction.member?.voice?.channel ?? null;
+  const room = createRoom(title, {
+    voiceChannelId: voiceChannel?.id ?? null,
+    guildId: interaction.guildId ?? null,
+  });
   room.game = game?.name ?? null;
   room.gameIconUrl = game?.iconUrl ?? null;
+  if (voiceChannel) room.voiceRoster = rosterFromChannel(voiceChannel);
   const { roomUrl, ownerUrl } = describeRoom(room, true);
 
   await interaction.reply({
