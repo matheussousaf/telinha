@@ -1,0 +1,20 @@
+{
+  "name": "telinha",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Low-latency screenshare rooms for your Discord friends: a WebRTC web app plus a Discord bot that posts pinned watch links.",
+  "engines": {
+    "node": ">=20.12"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "register": "node src/register-commands.js",
+    "smoke": "node scripts/smoke-test.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  }
+}

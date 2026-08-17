@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>telinha — share</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main>
+      <h1 id="title">Share your screen</h1>
+      <div class="video-wrap">
+        <video autoplay playsinline muted></video>
+        <div id="overlay" class="overlay">Click “Start sharing” and pick your game window.</div>
+      </div>
+      <div class="controls">
+        <button id="start">🎬 Start sharing</button>
+        <button id="stop" class="secondary hidden">⏹ Stop</button>
+        <span id="status" class="pill">connecting…</span>
+        <span id="count" class="pill">0 watching</span>
+        <span id="game" class="pill hidden"></span>
+      </div>
+      <p class="muted">
+        Tip: in the picker, choose the game <em>window</em> (or the whole screen on Windows with
+        “share audio” ticked to send game sound). Chrome or Edge recommended.
+      </p>
+    </main>
+    <script type="module" src="/share.js"></script>
+  </body>
+</html>

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>telinha</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>🖥️ telinha</h1>
+      <p class="muted">
+        Low-latency screensharing for you and your friends. Create a room, keep the streamer link to
+        yourself, and send the watch link to your friends — or let the Discord bot post it for you
+        with <code>/screenshare</code>.
+      </p>
+      <div class="card">
+        <label for="name">Stream title</label>
+        <input id="name" type="text" placeholder="e.g. ranked with the boys" />
+        <button id="create">Create room</button>
+        <div id="out" class="links hidden">
+          <p>📤 <strong>Streamer link</strong> (keep it secret): <a id="share" href="#"></a></p>
+          <p>👀 <strong>Watch link</strong> (send to friends): <a id="watch" href="#"></a></p>
+        </div>
+      </div>
+    </main>
+    <script>
+      document.getElementById('create').onclick = async () => {
+        const name = document.getElementById('name').value.trim() || 'stream';
+        const res = await fetch('/api/rooms', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+        const { shareUrl, watchUrl } = await res.json();
+        const share = document.getElementById('share');
+        const watch = document.getElementById('watch');
+        share.textContent = share.href = shareUrl;
+        watch.textContent = watch.href = watchUrl;
+        document.getElementById('out').classList.remove('hidden');
+      };
+    </script>
+  </body>
+</html>

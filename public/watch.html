@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>telinha — watch</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main>
+      <h1 id="title">…</h1>
+      <div class="video-wrap">
+        <video autoplay playsinline muted></video>
+        <div id="overlay" class="overlay">Connecting…</div>
+      </div>
+      <div class="controls">
+        <button id="unmute" class="secondary">🔊 Unmute</button>
+        <button id="pip">📌 Pop out</button>
+        <button id="full" class="secondary">⛶ Fullscreen</button>
+        <span id="count" class="pill">0 watching</span>
+        <span id="game" class="pill hidden"></span>
+      </div>
+      <p class="muted">
+        Tip: “Pop out” floats the stream in an always-on-top mini-window — park it in a corner over
+        Discord and keep chatting.
+      </p>
+    </main>
+    <script type="module" src="/watch.js"></script>
+  </body>
+</html>
