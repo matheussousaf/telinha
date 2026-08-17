@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -5,7 +6,11 @@ import express from 'express';
 import { createRoom, getRoom } from './rooms.js';
 import { attachSignaling } from './signaling.js';
 
-const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web', 'dist');
+const INDEX_HTML = path.join(PUBLIC_DIR, 'index.html');
+if (!fs.existsSync(INDEX_HTML)) {
+  console.warn('[web] web/dist not found — run `npm run build` first (pages will 404 until then)');
+}
 const PORT = Number(process.env.PORT ?? 3000);
 
 export const BASE_URL = (process.env.BASE_URL ?? `http://localhost:${PORT}`).replace(/\/+$/, '');
@@ -20,8 +25,9 @@ const app = express();
 app.use(express.json());
 app.use(express.static(PUBLIC_DIR));
 
-app.get('/share/:room', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'share.html')));
-app.get('/watch/:room', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'watch.html')));
+// SPA routes — React Router takes it from here client-side.
+app.get('/share/:room', (_req, res) => res.sendFile(INDEX_HTML));
+app.get('/watch/:room', (_req, res) => res.sendFile(INDEX_HTML));
 
 app.get('/api/config', (_req, res) => {
   const iceServers = [{ urls: process.env.STUN_URL ?? 'stun:stun.l.google.com:19302' }];

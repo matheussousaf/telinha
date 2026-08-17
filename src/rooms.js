@@ -1,14 +1,26 @@
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
+import { ADJECTIVES, NOUNS } from './words.js';
 
 // Emits: 'live' (roomId), 'ended' (roomId). The bot listens to keep embeds fresh.
 export const roomEvents = new EventEmitter();
 
 const rooms = new Map();
 
+// Readable alias like "neon-falcon-4821". The watch link's privacy relies on
+// this being hard to enumerate; broadcasting additionally requires streamKey.
+function readableId() {
+  const pick = (list) => list[crypto.randomInt(list.length)];
+  return `${pick(ADJECTIVES)}-${pick(NOUNS)}-${crypto.randomInt(1000, 10000)}`;
+}
+
 export function createRoom(name = 'stream') {
+  let id;
+  do {
+    id = readableId();
+  } while (rooms.has(id));
   const room = {
-    id: crypto.randomBytes(6).toString('base64url'),
+    id,
     name: String(name).slice(0, 80),
     // Secret held only by whoever created the room — required to broadcast
     // and to upload thumbnails. Viewers never see it.

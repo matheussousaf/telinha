@@ -5,7 +5,7 @@ export async function fetchRtcConfig() {
 
 // Opens the signaling socket. Messages are handled strictly in arrival order
 // (each handler awaited before the next runs) so SDP always lands before ICE.
-export function wsConnect(params, onMessage, onClose) {
+export function openSignaling(params, onMessage, onClose) {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${proto}://${location.host}/ws?${new URLSearchParams(params)}`);
   let queue = Promise.resolve();

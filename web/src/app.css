@@ -1,0 +1,175 @@
+@import 'tailwindcss';
+
+@theme {
+  /* Discord dark-theme design tokens */
+  --font-sans: 'gg sans', 'Noto Sans', ui-sans-serif, system-ui, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
+
+  --color-bg0: #1e1f22; /* app frame / page ground */
+  --color-bg1: #2b2d31; /* sidebar-level surfaces: cards */
+  --color-bg2: #313338; /* chat-level surfaces */
+  --color-bg3: #383a40; /* hover / secondary button rest */
+  --color-bg4: #404249; /* secondary button hover */
+  --color-line: #3f4147;
+
+  --color-fg1: #f2f3f5; /* headings */
+  --color-fg2: #dbdee1; /* body */
+  --color-fg3: #b5bac1; /* muted */
+  --color-fg4: #949ba4; /* faint */
+
+  --color-blurple: #5865f2;
+  --color-blurple-600: #4752c4;
+  --color-blurple-700: #3c45a5;
+  --color-green: #23a55a;
+  --color-red: #ed4245;
+  --color-red-600: #da373c;
+  --color-yellow: #f0b232;
+}
+
+@layer base {
+  body {
+    @apply bg-bg0 text-fg2 font-sans antialiased min-h-screen;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--color-blurple) 40%, transparent);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-blurple);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 h-[38px] px-4 rounded-lg bg-blurple text-white text-[15px] font-medium leading-none cursor-pointer select-none;
+    border: none;
+    transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease;
+  }
+  .btn:hover {
+    background: var(--color-blurple-600);
+  }
+  .btn:active {
+    background: var(--color-blurple-700);
+  }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .btn:disabled:hover {
+    background: var(--color-blurple);
+  }
+  .btn svg {
+    flex: none;
+  }
+
+  .btn-secondary {
+    @apply bg-bg3 text-fg1;
+  }
+  .btn-secondary:hover {
+    background: var(--color-bg4);
+  }
+  .btn-secondary:active {
+    background: var(--color-bg4);
+  }
+  .btn-secondary:disabled:hover {
+    background: var(--color-bg3);
+  }
+
+  .btn-danger {
+    @apply bg-transparent text-red;
+    border: 1px solid color-mix(in srgb, var(--color-red) 45%, transparent);
+  }
+  .btn-danger:hover {
+    background: color-mix(in srgb, var(--color-red) 12%, transparent);
+  }
+  .btn-danger:active {
+    background: color-mix(in srgb, var(--color-red) 18%, transparent);
+  }
+
+  .card {
+    @apply bg-bg1 border border-line rounded-xl;
+  }
+
+  .input {
+    @apply w-full h-10 px-3 rounded-lg bg-bg0 text-fg1 border border-line;
+    outline: none;
+    transition: border-color 150ms ease;
+  }
+  .input::placeholder {
+    color: var(--color-fg4);
+  }
+  .input:focus {
+    border-color: var(--color-blurple);
+  }
+
+  .label {
+    @apply block text-xs font-bold uppercase tracking-wide text-fg3 mb-2;
+  }
+
+  .pill {
+    @apply inline-flex items-center gap-2 h-[30px] px-3 rounded-lg bg-bg1 border border-line font-mono text-xs font-medium uppercase tracking-wider text-fg3 whitespace-nowrap max-w-full overflow-hidden text-ellipsis;
+    font-variant-numeric: tabular-nums;
+  }
+  .pill.live {
+    @apply text-white font-semibold;
+    background: var(--color-red);
+    border-color: var(--color-red);
+  }
+
+  .overlay {
+    @apply absolute inset-0 flex items-center justify-center text-center px-6 text-fg3 text-[15px];
+    background: rgb(0 0 0 / 0.6);
+    backdrop-filter: blur(4px);
+  }
+
+  .video-frame {
+    @apply relative bg-black rounded-xl overflow-hidden aspect-video border border-line;
+    transition: border-color 200ms ease, box-shadow 200ms ease;
+  }
+
+  .tag {
+    @apply text-[11px] font-bold uppercase tracking-wider px-2 py-1 rounded flex-none;
+  }
+}
+
+/* LED dots on status/count readouts */
+#status::before,
+#count::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  flex: none;
+}
+#status::before {
+  background: var(--color-yellow);
+}
+#status.live::before {
+  background: #fff;
+  animation: led 1.6s ease-in-out infinite;
+}
+#count::before {
+  background: var(--color-blurple);
+}
+@keyframes led {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #status.live::before {
+    animation: none;
+  }
+}
+
+/* Red broadcast ring around the frame while live (share page only) */
+.video-frame.live {
+  border-color: var(--color-red);
+  box-shadow: 0 0 0 1px var(--color-red), 0 0 24px -6px rgb(237 66 69 / 0.5);
+}

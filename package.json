@@ -9,12 +9,23 @@
   },
   "scripts": {
     "start": "node src/index.js",
+    "dev": "vite",
+    "build": "vite build",
     "register": "node src/register-commands.js",
     "smoke": "node scripts/smoke-test.js"
   },
   "dependencies": {
     "discord.js": "^14.16.3",
     "express": "^4.21.2",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router-dom": "^7.18.2",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "^6.0.5",
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.2.1"
   }
 }
