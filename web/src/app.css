@@ -2,7 +2,9 @@
 
 @theme {
   /* Discord dark-theme design tokens */
-  --font-sans: 'gg sans', 'Noto Sans', ui-sans-serif, system-ui, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  --font-sans: 'Space Grotesk', ui-sans-serif, system-ui, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  /* Discord's own voice — reserved for Discord-flavored elements (buttons etc.) */
+  --font-discord: 'gg sans', 'Noto Sans', ui-sans-serif, system-ui, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
   --font-mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
 
   --color-bg0: #1e1f22; /* app frame / page ground */
@@ -45,6 +47,7 @@
   .btn {
     @apply inline-flex items-center justify-center gap-2 h-[38px] px-4 rounded-lg bg-blurple text-white text-[15px] font-medium leading-none cursor-pointer select-none;
     border: none;
+    font-family: var(--font-discord);
     transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease;
   }
   .btn:hover {

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { fetchRtcConfig, openSignaling } from '../api.js';
 import TopBar from '../components/TopBar.jsx';
+import Facepile from '../components/Facepile.jsx';
 
 export default function Watch() {
   const { roomId } = useParams();
@@ -13,7 +14,7 @@ export default function Watch() {
   const unmountedRef = useRef(false);
 
   const [title, setTitle] = useState('…');
-  const [count, setCount] = useState(0);
+  const [viewerList, setViewerList] = useState([]);
   const [game, setGame] = useState(null);
   const [overlay, setOverlay] = useState('Conectando…');
   const [muted, setMuted] = useState(true);
@@ -66,8 +67,8 @@ export default function Watch() {
       pcRef.current = null;
       if (videoRef.current) videoRef.current.srcObject = null;
       setOverlay('Transmissão encerrada.');
-    } else if (msg.type === 'viewer-count') {
-      setCount(msg.count);
+    } else if (msg.type === 'viewers') {
+      setViewerList(msg.viewers);
     } else if (msg.type === 'signal') {
       await handleSignal(msg.data);
     }
@@ -128,9 +129,9 @@ export default function Watch() {
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3" /><path d="M16 3h3a2 2 0 0 1 2 2v3" /><path d="M16 21h3a2 2 0 0 0 2-2v-3" /><path d="M8 21H5a2 2 0 0 1-2-2v-3" /></svg>
           Tela cheia
         </button>
-        <span className="flex-1" />
-        <span id="count" className="pill">{count} assistindo</span>
         {game && <span className="pill">🎮 {game}</span>}
+        <span className="flex-1" />
+        <Facepile viewers={viewerList} />
       </div>
 
       <p className="text-fg4 text-[13px] mt-4">

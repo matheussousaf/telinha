@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { fetchRtcConfig, openSignaling } from '../api.js';
 import TopBar from '../components/TopBar.jsx';
+import Facepile from '../components/Facepile.jsx';
 
 const IDLE_OVERLAY = 'Clique em “Iniciar transmissão” e escolha a janela do jogo.';
 
@@ -22,7 +23,7 @@ export default function Share() {
   const [title, setTitle] = useState('Compartilhar tela');
   const [status, setStatus] = useState('conectando…');
   const [live, setLive] = useState(false);
-  const [count, setCount] = useState(0);
+  const [viewerList, setViewerList] = useState([]);
   const [game, setGame] = useState(null);
   const [overlay, setOverlay] = useState(IDLE_OVERLAY);
   const [copied, setCopied] = useState(false);
@@ -70,7 +71,8 @@ export default function Share() {
       setTitle(msg.name);
       setGame(msg.game);
       viewersRef.current.clear();
-      msg.viewers.forEach((id) => viewersRef.current.add(id));
+      msg.viewers.forEach((v) => viewersRef.current.add(v.id));
+      setViewerList(msg.viewers);
       setStatus(streamRef.current ? 'ao vivo' : 'pronto');
       if (streamRef.current) {
         // Reconnected mid-stream: re-announce and offer to anyone not yet connected.
@@ -78,16 +80,16 @@ export default function Share() {
         for (const id of viewersRef.current) if (!peersRef.current.has(id)) await offerTo(id);
       }
     } else if (msg.type === 'viewer-joined') {
-      viewersRef.current.add(msg.viewerId);
-      if (streamRef.current) await offerTo(msg.viewerId);
+      viewersRef.current.add(msg.viewer.id);
+      if (streamRef.current) await offerTo(msg.viewer.id);
     } else if (msg.type === 'viewer-left') {
       viewersRef.current.delete(msg.viewerId);
       peersRef.current.get(msg.viewerId)?.close();
       peersRef.current.delete(msg.viewerId);
     } else if (msg.type === 'room-info') {
       setGame(msg.game);
-    } else if (msg.type === 'viewer-count') {
-      setCount(msg.count);
+    } else if (msg.type === 'viewers') {
+      setViewerList(msg.viewers);
     } else if (msg.type === 'signal') {
       const pc = peersRef.current.get(msg.from);
       if (!pc) return;
@@ -218,10 +220,10 @@ export default function Share() {
             Parar
           </button>
         )}
-        <span className="flex-1" />
         <span id="status" className={`pill ${live ? 'live' : ''}`}>{status}</span>
-        <span id="count" className="pill">{count} assistindo</span>
         {game && <span className="pill">🎮 {game}</span>}
+        <span className="flex-1" />
+        <Facepile viewers={viewerList} />
       </div>
 
       <div className="card p-4 mt-4">

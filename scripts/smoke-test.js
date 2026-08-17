@@ -68,20 +68,24 @@ const viewer = await open({ room: room.id, role: 'watch' });
 const welcome = await viewer.next('welcome');
 check(welcome.live === false, 'viewer welcome (not live yet)');
 const joined = await streamer.next('viewer-joined');
-check(Boolean(joined.viewerId), 'streamer notified of viewer join');
+check(Boolean(joined.viewer?.id && joined.viewer?.name && joined.viewer?.emoji), 'streamer got viewer identity');
+const viewerId = joined.viewer.id;
+let roster = await streamer.next('viewers');
+if (roster.count === 0) roster = await streamer.next('viewers'); // skip the empty roster sent on streamer connect
+check(roster.count === 1 && roster.viewers[0].id === viewerId, 'viewer roster broadcast');
 
 streamer.send(JSON.stringify({ type: 'live' }));
 await viewer.next('stream-live');
 check(true, 'viewer received stream-live');
 
 // Signal relay in both directions
-streamer.send(JSON.stringify({ type: 'signal', to: joined.viewerId, data: { sdp: { type: 'offer', sdp: 'x' } } }));
+streamer.send(JSON.stringify({ type: 'signal', to: viewerId, data: { sdp: { type: 'offer', sdp: 'x' } } }));
 const offer = await viewer.next('signal');
 check(offer.data?.sdp?.type === 'offer', 'offer relayed streamer → viewer');
 
 viewer.send(JSON.stringify({ type: 'signal', data: { sdp: { type: 'answer', sdp: 'y' } } }));
 const answer = await streamer.next('signal');
-check(answer.from === joined.viewerId && answer.data?.sdp?.type === 'answer', 'answer relayed viewer → streamer');
+check(answer.from === viewerId && answer.data?.sdp?.type === 'answer', 'answer relayed viewer → streamer');
 
 // Thumbnails
 const upload = await fetch(`${base}/api/rooms/${room.id}/thumbnail?key=${streamKey}`, {
