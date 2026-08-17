@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { fetchRtcConfig, openSignaling } from '../api.js';
+import { fetchRtcConfig, openSignaling, isStale, STALE_PAGE_MSG } from '../api.js';
 import TopBar from '../components/TopBar.jsx';
 import Facepile from '../components/Facepile.jsx';
 
@@ -68,6 +68,11 @@ export default function Share() {
 
   async function handleMessage(msg) {
     if (msg.type === 'hello') {
+      if (isStale(msg)) {
+        setStatus('desatualizado');
+        setOverlay(STALE_PAGE_MSG);
+        return;
+      }
       setTitle(msg.name);
       setGame(msg.game);
       viewersRef.current.clear();

@@ -1,3 +1,12 @@
+// Must match src/protocol.js on the server — see the note there.
+export const PROTOCOL_VERSION = 2;
+
+export const STALE_PAGE_MSG = 'Página desatualizada — atualize com Ctrl+Shift+R';
+
+export function isStale(msg) {
+  return typeof msg.proto === 'number' && msg.proto !== PROTOCOL_VERSION;
+}
+
 export async function fetchRtcConfig() {
   const res = await fetch('/api/config');
   return await res.json();

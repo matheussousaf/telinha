@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import { getRoom, roomEvents } from './rooms.js';
+import { PROTOCOL_VERSION } from './protocol.js';
 
 // Anonymous viewer identities, BR edition — no accounts, still human.
 const ANON_ANIMALS = [
@@ -95,7 +96,7 @@ function handleStreamer(room, ws) {
   room.streamer?.close(4000, 'replaced by new streamer session');
   room.streamer = ws;
 
-  send(ws, { type: 'hello', role: 'share', name: room.name, game: room.game, viewers: identities(room) });
+  send(ws, { type: 'hello', proto: PROTOCOL_VERSION, role: 'share', name: room.name, game: room.game, viewers: identities(room) });
   broadcastViewers(room);
 
   ws.on('message', (raw) => {
@@ -132,7 +133,7 @@ function handleViewer(room, ws) {
   const identity = makeIdentity(viewerId);
   room.viewers.set(viewerId, { ws, identity });
 
-  send(ws, { type: 'welcome', name: room.name, live: room.live, game: room.game, you: identity });
+  send(ws, { type: 'welcome', proto: PROTOCOL_VERSION, name: room.name, live: room.live, game: room.game, you: identity });
   send(room.streamer, { type: 'viewer-joined', viewer: identity });
   broadcastViewers(room);
 
