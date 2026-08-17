@@ -47,11 +47,11 @@ function createClient(intents) {
   client.once(Events.ClientReady, (c) => console.log(`[bot] logged in as ${c.user.tag}`));
 
   client.on(Events.InteractionCreate, async (interaction) => {
-    if (!interaction.isChatInputCommand() || interaction.commandName !== 'screenshare') return;
+    if (!interaction.isChatInputCommand() || interaction.commandName !== 'telinha') return;
     try {
-      await handleScreenshare(interaction);
+      await handleTelinha(interaction);
     } catch (err) {
-      console.error('[bot] /screenshare failed:', err);
+      console.error('[bot] /telinha failed:', err);
     }
   });
 
@@ -91,13 +91,23 @@ function wireRoomEvents() {
   });
 
   roomEvents.on('ended', (roomId) => {
+    // Nobody sharing anymore — the room itself stays open.
     const entry = tracked.get(roomId);
     if (!entry) return;
-    entry.state = 'ended';
+    entry.state = 'idle';
     clearInterval(entry.timer);
     entry.timer = null;
     refreshEmbed(roomId);
+  });
+
+  roomEvents.on('closed', (roomId) => {
+    const entry = tracked.get(roomId);
+    if (!entry) return;
+    clearInterval(entry.timer);
+    const shell = { id: roomId, name: entry.roomName, game: null, gameIconUrl: null, participants: new Map() };
+    entry.message.edit({ embeds: [buildEmbed(shell, entry.user, 'closed')], components: [] }).catch(() => {});
     entry.message.unpin().catch(() => {});
+    tracked.delete(roomId);
   });
 }
 
@@ -116,27 +126,27 @@ function detectGame(presence) {
   return { name: activity.name, iconUrl };
 }
 
-async function handleScreenshare(interaction) {
+async function handleTelinha(interaction) {
   const game = detectGame(interaction.member?.presence);
   const title =
-    interaction.options.getString('title') ??
-    (game ? game.name : null) ??
+    interaction.options.getString('nome') ??
     interaction.member?.voice?.channel?.name ??
-    `${interaction.user.displayName}'s screen`;
+    (game ? game.name : null) ??
+    `sala de ${interaction.user.displayName}`;
 
   const room = createRoom(title);
   room.game = game?.name ?? null;
   room.gameIconUrl = game?.iconUrl ?? null;
-  const { watchUrl, shareUrl } = describeRoom(room, true);
+  const { roomUrl, ownerUrl } = describeRoom(room, true);
 
   await interaction.reply({
     flags: MessageFlags.Ephemeral,
     content: [
-      '**Your streamer link** — keep it to yourself, anyone with it can broadcast:',
-      shareUrl,
+      '**Seu link de dono** — com ele você pode encerrar a sala (não compartilhe):',
+      ownerUrl,
       '',
-      `Friends watch at: ${watchUrl}`,
-      game ? `\n🎮 Detected game: **${game.name}**` : '',
+      `Link da galera (todo mundo pode compartilhar a tela): ${roomUrl}`,
+      game ? `\n🎮 Jogo detectado: **${game.name}**` : '',
     ].join('\n'),
   });
 
@@ -146,7 +156,7 @@ async function handleScreenshare(interaction) {
     embeds: [buildEmbed(room, interaction.user, 'waiting')],
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('▶ Watch live').setURL(watchUrl),
+        new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('▶ Entrar na sala').setURL(roomUrl),
       ),
     ],
   });
@@ -154,30 +164,32 @@ async function handleScreenshare(interaction) {
   // Pin needs Manage Messages — skip quietly if the bot doesn't have it.
   message.pin().catch(() => {});
 
-  tracked.set(room.id, { message, user: interaction.user, timer: null, state: 'waiting' });
+  tracked.set(room.id, { message, user: interaction.user, timer: null, state: 'waiting', roomName: room.name });
 }
 
 function buildEmbed(room, user, state) {
   const embed = new EmbedBuilder()
     .setAuthor({ name: user.displayName, iconURL: user.displayAvatarURL() })
     .setTitle(room.name)
-    .setURL(`${BASE_URL}/watch/${room.id}`);
+    .setURL(`${BASE_URL}/room/${room.id}`);
 
-  const playing = room.game ? `🎮 Playing **${room.game}**\n` : '';
+  const playing = room.game ? `🎮 Jogando **${room.game}**\n` : '';
   if (room.gameIconUrl) embed.setThumbnail(room.gameIconUrl);
 
   if (state === 'waiting') {
-    embed.setColor(0x8899aa).setDescription(`${playing}⏳ Waiting for the stream to start…`);
+    embed.setColor(0x8899aa).setDescription(`${playing}🚪 Sala aberta — entra aí, qualquer um pode compartilhar a tela.`);
   } else if (state === 'live') {
-    embed.setColor(0xed4245).setDescription(`${playing}🔴 **LIVE** — click *Watch live* to open the stream`);
-    embed.setFooter({ text: `${room.viewers.size} watching` });
+    embed.setColor(0xed4245).setDescription(`${playing}🔴 **AO VIVO** — clica em *Entrar na sala* pra assistir`);
+    embed.setFooter({ text: `${room.participants.size} na sala` });
     // Discord fetches this URL itself, so it only works with a public BASE_URL;
     // the ?t= cache-buster changes with each new thumbnail upload.
     if (room.thumbnailAt && !/localhost|127\.0\.0\.1/.test(BASE_URL)) {
       embed.setImage(`${BASE_URL}/thumbs/${room.id}.jpg?t=${room.thumbnailAt}`);
     }
+  } else if (state === 'closed') {
+    embed.setColor(0x555555).setDescription('🚪 Sala encerrada pelo dono. Valeu!');
   } else {
-    embed.setColor(0x555555).setDescription(`${playing}⏹️ Stream ended.`);
+    embed.setColor(0x555555).setDescription(`${playing}⏸️ Ninguém compartilhando agora — a sala segue aberta.`);
   }
   return embed;
 }

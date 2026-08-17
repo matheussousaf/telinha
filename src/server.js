@@ -16,8 +16,8 @@ const PORT = Number(process.env.PORT ?? 3000);
 export const BASE_URL = (process.env.BASE_URL ?? `http://localhost:${PORT}`).replace(/\/+$/, '');
 
 export function describeRoom(room, withKey = false) {
-  const out = { id: room.id, name: room.name, watchUrl: `${BASE_URL}/watch/${room.id}` };
-  if (withKey) out.shareUrl = `${BASE_URL}/share/${room.id}?key=${room.streamKey}`;
+  const out = { id: room.id, name: room.name, roomUrl: `${BASE_URL}/room/${room.id}` };
+  if (withKey) out.ownerUrl = `${BASE_URL}/room/${room.id}?key=${room.streamKey}`;
   return out;
 }
 
@@ -26,6 +26,8 @@ app.use(express.json());
 app.use(express.static(PUBLIC_DIR));
 
 // SPA routes — React Router takes it from here client-side.
+// /share and /watch are legacy paths that redirect to /room in the client.
+app.get('/room/:room', (_req, res) => res.sendFile(INDEX_HTML));
 app.get('/share/:room', (_req, res) => res.sendFile(INDEX_HTML));
 app.get('/watch/:room', (_req, res) => res.sendFile(INDEX_HTML));
 
@@ -52,13 +54,20 @@ app.post('/api/rooms', (req, res) => {
 app.get('/api/rooms/:id', (req, res) => {
   const room = getRoom(req.params.id);
   if (!room) return res.status(404).json({ error: 'not found' });
-  res.json({ id: room.id, name: room.name, live: room.live, viewers: room.viewers.size });
+  res.json({
+    id: room.id,
+    name: room.name,
+    live: room.live,
+    participants: room.participants.size,
+    sharing: room.sharing.size,
+  });
 });
 
 app.post('/api/rooms/:id/thumbnail', express.raw({ type: 'image/jpeg', limit: '1mb' }), (req, res) => {
   const room = getRoom(req.params.id);
   if (!room) return res.status(404).end();
-  if (req.query.key !== room.streamKey) return res.status(403).end();
+  const authorized = [...room.participants.values()].some((p) => p.token === req.query.token);
+  if (!authorized) return res.status(403).end();
   if (Buffer.isBuffer(req.body) && req.body.length > 0) {
     room.thumbnail = req.body;
     room.thumbnailAt = Date.now();

@@ -21,7 +21,7 @@ const FEATURES = [
   {
     emoji: '🤖',
     title: 'Bot no Discord',
-    text: '/screenshare cria a sala e posta o link no canal, com thumbnail ao vivo e contador.',
+    text: '/telinha cria a sala com o nome do seu canal de voz e posta o convite com thumbnail ao vivo.',
   },
   {
     emoji: '📌',
@@ -53,8 +53,8 @@ export default function Landing() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: name.trim() || 'stream' }),
       });
-      const { shareUrl } = await res.json();
-      const u = new URL(shareUrl);
+      const { ownerUrl } = await res.json();
+      const u = new URL(ownerUrl);
       navigate(u.pathname + u.search);
     } catch {
       setBusy(false);
@@ -107,8 +107,8 @@ export default function Landing() {
             </button>
           </div>
           <p className="text-fg4 text-[13px] mt-3">
-            Grátis e sem conta — você cai na sua página de transmissão com o link pronto pra colar
-            no Discord.
+            Grátis e sem conta — a sala é tipo um canal de voz: todo mundo que entrar pode
+            compartilhar a tela, e você (dono) decide quando ela fecha.
           </p>
         </div>
 

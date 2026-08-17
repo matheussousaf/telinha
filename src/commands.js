@@ -2,10 +2,10 @@ import { SlashCommandBuilder } from 'discord.js';
 
 export const commandData = [
   new SlashCommandBuilder()
-    .setName('screenshare')
-    .setDescription('Create a screenshare room and post the watch link in this channel')
+    .setName('telinha')
+    .setDescription('Cria uma sala de screenshare com o nome do seu canal de voz')
     .addStringOption((o) =>
-      o.setName('title').setDescription('Stream title (defaults to your voice channel name)').setRequired(false),
+      o.setName('nome').setDescription('Nome da sala (padrão: seu canal de voz)').setRequired(false),
     )
     .toJSON(),
 ];

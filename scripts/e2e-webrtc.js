@@ -25,6 +25,17 @@ const res = await fetch(`${base}/api/rooms`, {
 const room = await res.json();
 console.log(`room: ${room.id}`);
 
+async function joinRoom(page, url, name) {
+  await page.goto(url);
+  await page.waitForSelector('#name');
+  await page.type('#name', name);
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.includes('Entrar'));
+    btn.click();
+  });
+  await new Promise((r) => setTimeout(r, 800)); // let the WS connect
+}
+
 const browser = await puppeteer.launch({
   headless: 'new',
   args: [
@@ -70,20 +81,18 @@ await streamer.evaluateOnNewDocument(() => {
   navigator.mediaDevices.getDisplayMedia = (opts) =>
     navigator.mediaDevices.getUserMedia({ video: true, audio: false });
 });
-await streamer.goto(`${base}${new URL(room.shareUrl).pathname}${new URL(room.shareUrl).search}`);
-await streamer.waitForSelector('button');
-await new Promise((r) => setTimeout(r, 800)); // let the WS connect
+await joinRoom(streamer, `${base}${new URL(room.ownerUrl).pathname}${new URL(room.ownerUrl).search}`, 'e2e-dono');
 await streamer.evaluate(() => {
-  const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.includes('Iniciar'));
-  if (!btn) throw new Error('start button not found');
+  const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.includes('Compartilhar'));
+  if (!btn) throw new Error('share button not found');
   btn.click();
 });
 
-// Viewer
+// Viewer joins through the plain room link
 const viewer = await browser.newPage();
 wirePage(viewer, 'watch');
 await instrumentRtc(viewer, FORCE_RELAY);
-await viewer.goto(`${base}/watch/${room.id}`);
+await joinRoom(viewer, `${base}/room/${room.id}`, 'e2e-amigo');
 
 // Give the handshake a few seconds, then interrogate the viewer's video element.
 await new Promise((r) => setTimeout(r, 6000));

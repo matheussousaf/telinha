@@ -1,23 +1,24 @@
 import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
-import { getRoom, roomEvents } from './rooms.js';
+import { deleteRoom, getRoom, roomEvents, touchRoom } from './rooms.js';
 import { PROTOCOL_VERSION } from './protocol.js';
 
-// Anonymous viewer identities, BR edition — no accounts, still human.
+// Fallback identities for people who skip picking a name.
 const ANON_ANIMALS = [
   'capivara', 'tucano', 'jabuti', 'arara', 'boto', 'mico', 'tatu', 'quati',
   'axolote', 'onça', 'sagui', 'lontra', 'tamanduá', 'seriema', 'maritaca', 'curió',
 ];
-const ANON_EMOJI = ['🦫', '🦜', '🐢', '🦉', '🐬', '🐵', '🦔', '🦝', '🦎', '🐆', '🐒', '🦦', '🐜', '🦤', '🦩', '🐦'];
-const ANON_COLORS = ['#5865F2', '#23A55A', '#F0B232', '#ED4245', '#EB459E', '#3BA6C4', '#9B59B6', '#E67E22'];
+const AVATAR_EMOJI = ['🦫', '🦜', '🐢', '🦉', '🐬', '🐵', '🦔', '🦝', '🦎', '🐆', '🐒', '🦦', '🐜', '🦤', '🦩', '🐦'];
+const AVATAR_COLORS = ['#5865F2', '#23A55A', '#F0B232', '#ED4245', '#EB459E', '#3BA6C4', '#9B59B6', '#E67E22', '#795548', '#607D8B'];
 
-function makeIdentity(viewerId) {
+function makeIdentity(id, name, owner) {
   const i = crypto.randomInt(ANON_ANIMALS.length);
   return {
-    id: viewerId,
-    name: `${ANON_ANIMALS[i]} #${crypto.randomInt(1, 100)}`,
-    emoji: ANON_EMOJI[i],
-    color: ANON_COLORS[crypto.randomInt(ANON_COLORS.length)],
+    id,
+    name: (name || '').trim().slice(0, 32) || `${ANON_ANIMALS[i]} #${crypto.randomInt(1, 100)}`,
+    emoji: AVATAR_EMOJI[i],
+    color: AVATAR_COLORS[crypto.randomInt(AVATAR_COLORS.length)],
+    owner,
   };
 }
 
@@ -35,17 +36,15 @@ export function attachSignaling(httpServer) {
     const room = getRoom(url.searchParams.get('room') ?? '');
     if (!room) return ws.close(4004, 'room not found');
 
+    const key = url.searchParams.get('key');
+    if (key && key !== room.streamKey) return ws.close(4003, 'bad owner key');
+
     ws.isAlive = true;
     ws.on('pong', () => {
       ws.isAlive = true;
     });
 
-    if (url.searchParams.get('role') === 'share') {
-      if (url.searchParams.get('key') !== room.streamKey) return ws.close(4003, 'bad stream key');
-      handleStreamer(room, ws);
-    } else {
-      handleViewer(room, ws);
-    }
+    handleParticipant(room, ws, url.searchParams.get('name'), key === room.streamKey);
   });
 
   const heartbeat = setInterval(() => {
@@ -74,77 +73,88 @@ function safeParse(raw) {
   }
 }
 
-function identities(room) {
-  return [...room.viewers.values()].map((v) => v.identity);
+function roster(room) {
+  return [...room.participants.values()].map((p) => p.identity);
+}
+
+function broadcast(room, msg) {
+  for (const p of room.participants.values()) send(p.ws, msg);
+}
+
+function broadcastRoster(room) {
+  broadcast(room, { type: 'participants', participants: roster(room), sharing: [...room.sharing] });
 }
 
 // Pushes current room metadata (e.g. the detected game) to everyone connected.
 export function notifyRoomInfo(room) {
-  const info = { type: 'room-info', name: room.name, game: room.game };
-  send(room.streamer, info);
-  for (const v of room.viewers.values()) send(v.ws, info);
+  broadcast(room, { type: 'room-info', name: room.name, game: room.game });
 }
 
-function broadcastViewers(room) {
-  const msg = { type: 'viewers', count: room.viewers.size, viewers: identities(room) };
-  for (const v of room.viewers.values()) send(v.ws, msg);
-  send(room.streamer, msg);
-}
+function handleParticipant(room, ws, name, owner) {
+  const id = crypto.randomUUID();
+  const identity = makeIdentity(id, name, owner);
+  const token = crypto.randomBytes(12).toString('base64url'); // authorizes thumbnail uploads
+  room.participants.set(id, { ws, identity, token });
+  touchRoom(room);
 
-function handleStreamer(room, ws) {
-  // A page refresh reconnects before the old socket dies — replace it.
-  room.streamer?.close(4000, 'replaced by new streamer session');
-  room.streamer = ws;
-
-  send(ws, { type: 'hello', proto: PROTOCOL_VERSION, role: 'share', name: room.name, game: room.game, viewers: identities(room) });
-  broadcastViewers(room);
+  send(ws, {
+    type: 'welcome',
+    proto: PROTOCOL_VERSION,
+    you: identity,
+    token,
+    name: room.name,
+    game: room.game,
+    participants: roster(room),
+    sharing: [...room.sharing],
+  });
+  broadcastRoster(room);
 
   ws.on('message', (raw) => {
     const msg = safeParse(raw);
     if (!msg) return;
     if (msg.type === 'signal' && msg.to) {
-      send(room.viewers.get(msg.to)?.ws, { type: 'signal', data: msg.data });
-    } else if (msg.type === 'live') {
-      room.live = true;
-      room.liveAt = Date.now();
-      for (const v of room.viewers.values()) send(v.ws, { type: 'stream-live' });
-      roomEvents.emit('live', room.id);
-    } else if (msg.type === 'end') {
-      endStream(room);
+      send(room.participants.get(msg.to)?.ws, { type: 'signal', from: id, sharer: msg.sharer, data: msg.data });
+    } else if (msg.type === 'share-start') {
+      room.sharing.add(id);
+      broadcastRoster(room);
+      if (!room.live) {
+        room.live = true;
+        room.liveAt = Date.now();
+        roomEvents.emit('live', room.id);
+      }
+    } else if (msg.type === 'share-stop') {
+      stopSharing(room, id);
+    } else if (msg.type === 'close' && identity.owner) {
+      closeRoom(room);
     }
   });
 
   ws.on('close', () => {
-    if (room.streamer !== ws) return; // an old, replaced socket
-    room.streamer = null;
-    endStream(room);
+    if (!room.participants.has(id)) return; // room was closed
+    room.participants.delete(id);
+    stopSharing(room, id);
+    broadcastRoster(room);
   });
 }
 
-function endStream(room) {
-  if (!room.live) return;
-  room.live = false;
-  for (const v of room.viewers.values()) send(v.ws, { type: 'stream-ended' });
-  roomEvents.emit('ended', room.id);
+function stopSharing(room, id) {
+  if (!room.sharing.delete(id)) return;
+  broadcastRoster(room);
+  if (room.sharing.size === 0 && room.live) {
+    room.live = false;
+    roomEvents.emit('ended', room.id);
+  }
 }
 
-function handleViewer(room, ws) {
-  const viewerId = crypto.randomUUID();
-  const identity = makeIdentity(viewerId);
-  room.viewers.set(viewerId, { ws, identity });
-
-  send(ws, { type: 'welcome', proto: PROTOCOL_VERSION, name: room.name, live: room.live, game: room.game, you: identity });
-  send(room.streamer, { type: 'viewer-joined', viewer: identity });
-  broadcastViewers(room);
-
-  ws.on('message', (raw) => {
-    const msg = safeParse(raw);
-    if (msg?.type === 'signal') send(room.streamer, { type: 'signal', from: viewerId, data: msg.data });
-  });
-
-  ws.on('close', () => {
-    room.viewers.delete(viewerId);
-    send(room.streamer, { type: 'viewer-left', viewerId });
-    broadcastViewers(room);
-  });
+function closeRoom(room) {
+  broadcast(room, { type: 'room-closed' });
+  for (const p of room.participants.values()) p.ws.close(4001, 'room closed');
+  room.participants.clear();
+  room.sharing.clear();
+  if (room.live) {
+    room.live = false;
+    roomEvents.emit('ended', room.id);
+  }
+  roomEvents.emit('closed', room.id);
+  deleteRoom(room.id);
 }
