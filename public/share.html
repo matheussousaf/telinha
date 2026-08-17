@@ -4,23 +4,47 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>telinha — share</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <meta name="theme-color" content="#101116">
     <link rel="stylesheet" href="/style.css" />
   </head>
-  <body>
+  <body class="page-share">
     <main>
-      <h1 id="title">Share your screen</h1>
+      <header class="topbar">
+        <a class="brand" href="/">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <defs><linearGradient id="tg-share" x1="0" y1="0" x2="1" y2="1">
+              <stop stop-color="#6E7CFF"/><stop offset="1" stop-color="#4F5FF0"/>
+            </linearGradient></defs>
+            <rect x="2" y="3.5" width="20" height="14" rx="4" fill="url(#tg-share)"/>
+            <path d="M10 8.25v4.5l4.25-2.25L10 8.25z" fill="#fff"/>
+            <rect x="8" y="19.5" width="8" height="2" rx="1" fill="#343850"/>
+          </svg>
+          <span>telinha</span>
+        </a>
+        <span class="sep" aria-hidden="true"></span>
+        <h1 id="title">Share your screen</h1>
+      </header>
       <div class="video-wrap">
         <video autoplay playsinline muted></video>
         <div id="overlay" class="overlay">Click “Start sharing” and pick your game window.</div>
       </div>
       <div class="controls">
-        <button id="start">🎬 Start sharing</button>
-        <button id="stop" class="secondary hidden">⏹ Stop</button>
+        <button id="start">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3l14 9-14 9V3z"/></svg>
+          Start sharing
+        </button>
+        <button id="stop" class="secondary hidden">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>
+          Stop
+        </button>
         <span id="status" class="pill">connecting…</span>
         <span id="count" class="pill">0 watching</span>
         <span id="game" class="pill hidden"></span>
       </div>
-      <p class="muted">
+      <p class="muted tip">
         Tip: in the picker, choose the game <em>window</em> (or the whole screen on Windows with
         “share audio” ticked to send game sound). Chrome or Edge recommended.
       </p>
