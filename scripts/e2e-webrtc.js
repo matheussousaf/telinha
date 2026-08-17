@@ -96,7 +96,7 @@ const clickTileByName = (page, name) =>
     tile.click();
   }, name);
 
-const streamer = await browser.newPage();
+const streamer = await (await browser.createBrowserContext()).newPage();
 wirePage(streamer, 'share');
 await instrumentRtc(streamer, FORCE_RELAY);
 await patchCapture(streamer);
@@ -104,7 +104,7 @@ await joinRoom(streamer, `${base}${new URL(room.ownerUrl).pathname}${new URL(roo
 await clickShare(streamer);
 
 // Viewer joins through the plain room link
-const viewer = await browser.newPage();
+const viewer = await (await browser.createBrowserContext()).newPage();
 wirePage(viewer, 'watch');
 await instrumentRtc(viewer, FORCE_RELAY);
 await joinRoom(viewer, `${base}/room/${room.id}`, 'e2e-amigo');
@@ -161,7 +161,7 @@ console.log('after unfocus and refocus:', JSON.stringify(state2));
 const secondOk = isGood(state2);
 
 // The reported bug: TWO sharers, switch A -> B -> back to A.
-const sharer2 = await browser.newPage();
+const sharer2 = await (await browser.createBrowserContext()).newPage();
 wirePage(sharer2, 'share2');
 await instrumentRtc(sharer2, FORCE_RELAY);
 await patchCapture(sharer2);

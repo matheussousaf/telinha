@@ -79,7 +79,6 @@ export default function Room() {
   const navigate = useNavigate();
   const query = useMemo(() => new URLSearchParams(window.location.search), []);
   const ownerKey = query.get('key') ?? '';
-  const joinToken = query.get('j') ?? '';
 
   // --- refs (mutable per-connection state) ---
   const wsRef = useRef(null);
@@ -98,7 +97,12 @@ export default function Room() {
 
   // --- UI state ---
   const [nameInput, setNameInput] = useState(localStorage.getItem('telinha:name') ?? '');
-  const [joined, setJoined] = useState(!!joinToken); // personalized links skip the modal
+  const [joinToken, setJoinToken] = useState(() => query.get('j') ?? '');
+  // Personalized links and remembered identities (localStorage only — the
+  // server never stores anyone) skip the join screen entirely.
+  const [joined, setJoined] = useState(
+    () => !!(query.get('j') ?? '') || !!(localStorage.getItem('telinha:name') ?? '').trim(),
+  );
   const [voiceRoster, setVoiceRoster] = useState([]);
   const [roomName, setRoomName] = useState('…');
   const [me, setMe] = useState(null);
@@ -223,6 +227,9 @@ export default function Room() {
       meRef.current = msg.you;
       tokenRef.current = msg.token;
       setMe(msg.you);
+      // Remember the confirmed identity so a reload rejoins seamlessly.
+      localStorage.setItem('telinha:name', msg.you.name);
+      if (msg.you.avatarUrl) localStorage.setItem('telinha:avatar', msg.you.avatarUrl);
       setRoomName(msg.name);
       setGame(msg.game);
       knownIdsRef.current = new Set(msg.participants.map((p) => p.id));
@@ -435,9 +442,32 @@ export default function Room() {
 
   function joinRoom() {
     const name = nameInput.trim();
+    // Typing a DIFFERENT name is choosing a new identity — drop the old pfp.
+    if (name && name !== localStorage.getItem('telinha:name')) localStorage.removeItem('telinha:avatar');
     if (name) localStorage.setItem('telinha:name', name);
-    localStorage.removeItem('telinha:avatar'); // manual entry = no borrowed pfp
     setJoined(true);
+  }
+
+  function changeIdentity() {
+    if (!window.confirm('Trocar seu nome/foto? Você sai da sala e volta pela tela de entrada.')) return;
+    localStorage.removeItem('telinha:name');
+    localStorage.removeItem('telinha:avatar');
+    // Drop the personalized token from the URL so it can't override the new identity.
+    if (joinToken) {
+      setJoinToken('');
+      window.history.replaceState(null, '', `/room/${roomId}${ownerKey ? `?key=${ownerKey}` : ''}`);
+    }
+    setParticipants([]);
+    setSharingIds([]);
+    setStreams({});
+    setMe(null);
+    setFocusedId(null);
+    setIAmSharing(false);
+    prevFocusRef.current = null;
+    meRef.current = null;
+    knownIdsRef.current = new Set();
+    setNameInput('');
+    setJoined(false); // the join effect's cleanup closes ws + media
   }
 
   // ---------- render ----------
@@ -517,6 +547,20 @@ export default function Room() {
           </span>
         )}
         <span className="flex-1" />
+        {me && (
+          <button
+            className="flex items-center gap-2 bg-bg1 border border-line rounded-lg h-8 px-2 cursor-pointer hover:border-blurple transition-colors"
+            title="Trocar identidade"
+            onClick={changeIdentity}
+          >
+            {me.avatarUrl ? (
+              <img src={me.avatarUrl} alt="" className="w-5 h-5 rounded-full" referrerPolicy="no-referrer" />
+            ) : (
+              <span className="text-sm" aria-hidden="true">{me.emoji}</span>
+            )}
+            <span className="text-fg3 text-[12px] max-w-24 truncate hidden sm:block">{me.name}</span>
+          </button>
+        )}
         <button className="btn btn-secondary h-8 px-3 text-[13px]" onClick={copyInvite}>
           {copied ? <IconCheck size={14} /> : <IconLink size={14} />}
           {copied ? 'copiado!' : 'copiar convite'}
