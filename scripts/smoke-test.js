@@ -5,6 +5,7 @@ import { WebSocket } from 'ws';
 process.env.PORT = '3999';
 process.env.BASE_URL = 'http://localhost:3999';
 await import('../src/server.js');
+const { getRoom, issueJoinTicket } = await import('../src/rooms.js');
 await new Promise((r) => setTimeout(r, 300));
 
 const base = 'http://localhost:3999';
@@ -75,6 +76,25 @@ check(rosterAtOwner.participants.some((p) => p.id === guestId), 'owner sees gues
 guest.send(JSON.stringify({ type: 'share-start' }));
 const sharingRoster = await owner.next('participants', (m) => m.sharing.length === 1);
 check(sharingRoster.sharing[0] === guestId, 'guest sharing broadcast to room');
+
+// Watch subscription request is relayed to the sharer
+owner.send(JSON.stringify({ type: 'watch', to: guestId }));
+const watchReq = await guest.next('watch');
+check(watchReq.from === ownerId, 'watch request relayed to sharer');
+
+// Personalized join ticket carries a verified identity
+const ticket = issueJoinTicket(getRoom(room.id), {
+  name: 'Matheus',
+  avatarUrl: 'https://cdn.discordapp.com/avatars/1/a.png',
+});
+const ticketed = await open({ room: room.id, j: ticket });
+const tWelcome = await ticketed.next('welcome');
+check(
+  tWelcome.you.name === 'Matheus' && tWelcome.you.avatarUrl?.startsWith('https://cdn.discordapp.com/'),
+  'join ticket identity applied',
+);
+ticketed.close();
+await owner.next('participants', (m) => m.participants.length === 2); // ticketed guest left again
 
 // Media signaling: guest (sharer) offers to owner, owner answers — sharer-tagged
 guest.send(JSON.stringify({ type: 'signal', to: ownerId, sharer: guestId, data: { sdp: { type: 'offer', sdp: 'x' } } }));

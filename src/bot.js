@@ -9,7 +9,7 @@ import {
   GatewayIntentBits,
   MessageFlags,
 } from 'discord.js';
-import { createRoom, getRoom, listRooms, roomEvents } from './rooms.js';
+import { createRoom, getRoom, issueJoinTicket, listRooms, roomEvents } from './rooms.js';
 import { notifyRoomInfo } from './signaling.js';
 import { BASE_URL, describeRoom } from './server.js';
 
@@ -50,11 +50,14 @@ function createClient(intents) {
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
-    if (!interaction.isChatInputCommand() || interaction.commandName !== 'telinha') return;
     try {
-      await handleTelinha(interaction);
+      if (interaction.isChatInputCommand() && interaction.commandName === 'telinha') {
+        await handleTelinha(interaction);
+      } else if (interaction.isButton() && interaction.customId.startsWith('join:')) {
+        await handleJoinButton(interaction);
+      }
     } catch (err) {
-      console.error('[bot] /telinha failed:', err);
+      console.error('[bot] interaction failed:', err);
     }
   });
 
@@ -187,7 +190,9 @@ async function handleTelinha(interaction) {
     embeds: [buildEmbed(room, interaction.user, 'waiting')],
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('▶ Entrar na sala').setURL(roomUrl),
+        // Interaction button (not a link): Discord tells us exactly who clicked,
+        // so each person gets a personalized join link with their identity.
+        new ButtonBuilder().setStyle(ButtonStyle.Primary).setCustomId(`join:${room.id}`).setLabel('▶ Entrar na sala'),
       ),
     ],
   });
@@ -196,6 +201,26 @@ async function handleTelinha(interaction) {
   message.pin().catch(() => {});
 
   tracked.set(room.id, { message, user: interaction.user, timer: null, state: 'waiting', roomName: room.name });
+}
+
+async function handleJoinButton(interaction) {
+  const room = getRoom(interaction.customId.slice('join:'.length));
+  if (!room) {
+    return interaction.reply({ flags: MessageFlags.Ephemeral, content: 'Essa sala não existe mais 😢' });
+  }
+  const member = interaction.member;
+  const identity = {
+    name: (member?.displayName ?? interaction.user.displayName).slice(0, 32),
+    avatarUrl: (member ?? interaction.user).displayAvatarURL({ size: 128, extension: 'png' }),
+  };
+  const token = issueJoinTicket(room, identity);
+  let url = `${BASE_URL}/room/${room.id}?j=${token}`;
+  // The room's creator gets owner powers baked into their personal link.
+  if (tracked.get(room.id)?.user.id === interaction.user.id) url += `&key=${room.streamKey}`;
+  await interaction.reply({
+    flags: MessageFlags.Ephemeral,
+    content: `**Seu link** — entra direto com seu nome e foto:\n${url}`,
+  });
 }
 
 function buildEmbed(room, user, state) {

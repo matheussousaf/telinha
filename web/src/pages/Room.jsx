@@ -21,7 +21,7 @@ function bestTileWidth(w, h, n, gap = 12, maxW = 1000) {
   return Math.floor(best);
 }
 
-function useElementSize(ref) {
+function useElementSize(ref, rebind) {
   const [size, setSize] = useState({ w: 0, h: 0 });
   useEffect(() => {
     const el = ref.current;
@@ -31,14 +31,55 @@ function useElementSize(ref) {
     );
     ro.observe(el);
     return () => ro.disconnect();
-  }, [ref]);
+  }, [ref, rebind]);
   return size;
+}
+
+// Dominant-ish color from the avatar (Discord-style tile tint): average the
+// pixels of a tiny downscale, slightly darkened. Discord's CDN sends CORS
+// headers, so canvas readback works.
+const avatarColorCache = new Map();
+
+function useAvatarColor(url, fallback) {
+  const [color, setColor] = useState(() => (url && avatarColorCache.get(url)) || fallback);
+  useEffect(() => {
+    if (!url) return setColor(fallback);
+    if (avatarColorCache.has(url)) return setColor(avatarColorCache.get(url));
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const c = document.createElement('canvas');
+        c.width = c.height = 16;
+        const ctx = c.getContext('2d');
+        ctx.drawImage(img, 0, 0, 16, 16);
+        const d = ctx.getImageData(0, 0, 16, 16).data;
+        let r = 0, g = 0, b = 0, n = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          if (d[i + 3] < 128) continue;
+          r += d[i]; g += d[i + 1]; b += d[i + 2]; n++;
+        }
+        if (!n) return;
+        const mut = 0.72; // muted tone, like Discord's tiles
+        const col = `rgb(${Math.round((r / n) * mut)}, ${Math.round((g / n) * mut)}, ${Math.round((b / n) * mut)})`;
+        avatarColorCache.set(url, col);
+        setColor(col);
+      } catch {
+        setColor(fallback);
+      }
+    };
+    img.onerror = () => setColor(fallback);
+    img.src = url;
+  }, [url, fallback]);
+  return color;
 }
 
 export default function Room() {
   const { roomId } = useParams();
   const navigate = useNavigate();
-  const ownerKey = useMemo(() => new URLSearchParams(window.location.search).get('key') ?? '', []);
+  const query = useMemo(() => new URLSearchParams(window.location.search), []);
+  const ownerKey = query.get('key') ?? '';
+  const joinToken = query.get('j') ?? '';
 
   // --- refs (mutable per-connection state) ---
   const wsRef = useRef(null);
@@ -53,16 +94,17 @@ export default function Room() {
   const thumbTimerRef = useRef(null);
   const unmountedRef = useRef(false);
   const gridRef = useRef(null);
+  const prevFocusRef = useRef(null);
 
   // --- UI state ---
   const [nameInput, setNameInput] = useState(localStorage.getItem('telinha:name') ?? '');
-  const [joined, setJoined] = useState(false);
+  const [joined, setJoined] = useState(!!joinToken); // personalized links skip the modal
   const [voiceRoster, setVoiceRoster] = useState([]);
   const [roomName, setRoomName] = useState('…');
   const [me, setMe] = useState(null);
   const [participants, setParticipants] = useState([]);
   const [sharingIds, setSharingIds] = useState([]);
-  const [streams, setStreams] = useState({}); // sharerId -> MediaStream
+  const [streams, setStreams] = useState({}); // sharerId -> MediaStream (only who we watch + own preview)
   const [iAmSharing, setIAmSharing] = useState(false);
   const [focusedId, setFocusedId] = useState(null);
   const [globalMuted, setGlobalMuted] = useState(false);
@@ -72,15 +114,15 @@ export default function Room() {
   const [copied, setCopied] = useState(false);
 
   const roomUrl = `${window.location.origin}/room/${roomId}`;
-  const gridSize = useElementSize(gridRef);
+  const gridSize = useElementSize(gridRef, focusedId != null);
 
   useEffect(() => {
     document.title = `${roomName} — telinha`;
   }, [roomName]);
 
   // While the join screen is up, poll the room for the voice-channel roster
-  // (the bot mirrors who's in the voice call) so people can just click
-  // their own face instead of typing anything.
+  // (the bot mirrors who's in the voice call) so people can click their own
+  // face instead of typing anything.
   useEffect(() => {
     if (joined) return;
     let cancelled = false;
@@ -101,13 +143,6 @@ export default function Room() {
     };
   }, [joined, roomId]);
 
-  function pickIdentity(member) {
-    localStorage.setItem('telinha:name', member.name);
-    localStorage.setItem('telinha:avatar', member.avatarUrl);
-    setNameInput(member.name);
-    setJoined(true);
-  }
-
   useEffect(() => {
     if (!joined) return;
     unmountedRef.current = false;
@@ -122,6 +157,26 @@ export default function Room() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [joined]);
+
+  // Subscription model: we download at most ONE remote stream — the focused
+  // one. Changing focus unsubscribes from the old sharer and asks the new one
+  // to start sending.
+  useEffect(() => {
+    const myId = meRef.current?.id;
+    const prev = prevFocusRef.current;
+    if (prev === focusedId) return;
+    if (prev && prev !== myId) {
+      send({ type: 'unwatch', to: prev });
+      pcsInRef.current.get(prev)?.close();
+      pcsInRef.current.delete(prev);
+      setStreams((s) => {
+        const { [prev]: _, ...rest } = s;
+        return rest;
+      });
+    }
+    if (focusedId && focusedId !== myId) send({ type: 'watch', to: focusedId });
+    prevFocusRef.current = focusedId;
+  }, [focusedId]);
 
   function teardownMedia() {
     clearInterval(thumbTimerRef.current);
@@ -140,8 +195,9 @@ export default function Room() {
   function connect() {
     const params = { room: roomId, name: (localStorage.getItem('telinha:name') ?? nameInput).trim() };
     if (ownerKey) params.key = ownerKey;
+    if (joinToken) params.j = joinToken;
     const avatar = localStorage.getItem('telinha:avatar');
-    if (avatar) params.avatar = avatar;
+    if (avatar && !joinToken) params.avatar = avatar;
     wsRef.current = openSignaling(params, handleMessage, (e) => {
       if (unmountedRef.current) return;
       if (e.code === 4004) return setNotice('Sala não encontrada — ou já foi encerrada.');
@@ -152,6 +208,7 @@ export default function Room() {
       pcsInRef.current.clear();
       for (const pc of pcsOutRef.current.values()) pc.close();
       pcsOutRef.current.clear();
+      prevFocusRef.current = null;
       setStreams(() => {
         const mine = myStreamRef.current;
         return mine && meRef.current ? { [meRef.current.id]: mine } : {};
@@ -171,14 +228,15 @@ export default function Room() {
       knownIdsRef.current = new Set(msg.participants.map((p) => p.id));
       setParticipants(msg.participants);
       setSharingIds(msg.sharing);
+      // Joining mid-show: focus (and thereby subscribe to) the first sharer.
+      setFocusedId((f) => f ?? msg.sharing.find((id) => id !== msg.you.id) ?? null);
       if (myStreamRef.current) {
-        // Reconnected mid-share: re-announce under our new id and re-offer.
-        setStreams({ [msg.you.id]: myStreamRef.current });
+        // Reconnected mid-share: re-announce; watchers will re-request.
+        setStreams((s) => ({ ...s, [msg.you.id]: myStreamRef.current }));
         send({ type: 'share-start' });
-        for (const p of msg.participants) if (p.id !== msg.you.id) await offerTo(p.id);
       }
     } else if (msg.type === 'participants') {
-      await applyRoster(msg.participants, msg.sharing);
+      applyRoster(msg.participants, msg.sharing);
     } else if (msg.type === 'room-info') {
       setGame(msg.game);
       setRoomName(msg.name);
@@ -186,12 +244,17 @@ export default function Room() {
       teardownMedia();
       setStreams({});
       setNotice('Sala encerrada pelo dono. Valeu!');
+    } else if (msg.type === 'watch') {
+      if (myStreamRef.current) await offerTo(msg.from);
+    } else if (msg.type === 'unwatch') {
+      pcsOutRef.current.get(msg.from)?.close();
+      pcsOutRef.current.delete(msg.from);
     } else if (msg.type === 'signal') {
       await handleSignal(msg);
     }
   }
 
-  async function applyRoster(list, sharing) {
+  function applyRoster(list, sharing) {
     const myId = meRef.current?.id;
     const ids = new Set(list.map((p) => p.id));
     const sharingSet = new Set(sharing);
@@ -218,12 +281,6 @@ export default function Room() {
           const { [sharerId]: _, ...rest } = s;
           return rest;
         });
-      }
-    }
-    // If I'm sharing, offer to newcomers.
-    if (myStreamRef.current && myId) {
-      for (const p of list) {
-        if (p.id !== myId && !knownIdsRef.current.has(p.id)) await offerTo(p.id);
       }
     }
 
@@ -314,8 +371,7 @@ export default function Room() {
 
     setIAmSharing(true);
     setStreams((s) => ({ ...s, [meRef.current.id]: media }));
-    send({ type: 'share-start' });
-    for (const p of knownIdsRef.current) if (p !== meRef.current.id) await offerTo(p);
+    send({ type: 'share-start' }); // watchers subscribe on demand
     thumbTimerRef.current = setInterval(uploadThumbnail, 10_000);
     setTimeout(uploadThumbnail, 1500);
   }
@@ -365,6 +421,13 @@ export default function Room() {
 
   function closeRoom() {
     if (window.confirm('Encerrar a sala para todo mundo?')) send({ type: 'close' });
+  }
+
+  function pickIdentity(member) {
+    localStorage.setItem('telinha:name', member.name);
+    localStorage.setItem('telinha:avatar', member.avatarUrl);
+    setNameInput(member.name);
+    setJoined(true);
   }
 
   function joinRoom() {
@@ -462,40 +525,56 @@ export default function Room() {
         )}
       </header>
 
-      <main className="flex-1 min-h-0 px-3 pb-2 flex flex-col gap-2">
-        {focused && (
-          <Tile
-            p={focused}
-            stream={streams[focused.id]}
-            isMe={focused.id === myId}
-            focused
-            muted={globalMuted}
-            volume={focusedVolume}
-            onClick={() => setFocusedId(null)}
-            className="flex-1 min-h-0 tile-focused"
-          />
-        )}
-        <div
-          ref={gridRef}
-          className={
-            focused
-              ? 'flex-none h-24 flex gap-2 justify-center overflow-x-auto'
-              : 'flex-1 min-h-0 flex flex-wrap content-center items-center justify-center gap-3'
-          }
-        >
-          {gridPeople.map((p) => (
+      <main className="flex-1 min-h-0 px-3 pb-2">
+        {focused ? (
+          // Discord-style focus: big stream + participants in a real side
+          // column (bottom row on narrow screens) — nobody gets hidden.
+          <div className="h-full flex flex-col sm:flex-row gap-2">
             <Tile
-              key={p.id}
-              p={p}
-              stream={streams[p.id]}
-              isMe={p.id === myId}
-              muted
-              small={!!focused}
-              onClick={() => sharingSet.has(p.id) && setFocusedId(p.id)}
-              style={focused ? { width: '9.5rem' } : { width: `${tilePx}px` }}
+              p={focused}
+              stream={streams[focused.id]}
+              isMe={focused.id === myId}
+              focused
+              muted={globalMuted}
+              volume={focusedVolume}
+              onClick={() => setFocusedId(null)}
+              className="flex-1 min-h-0 tile-focused"
             />
-          ))}
-        </div>
+            <div className="flex-none flex sm:flex-col gap-2 overflow-x-auto sm:overflow-y-auto sm:w-52 h-28 sm:h-auto">
+              {gridPeople.map((p) => (
+                <Tile
+                  key={p.id}
+                  p={p}
+                  stream={streams[p.id]}
+                  isMe={p.id === myId}
+                  sharing={sharingSet.has(p.id)}
+                  muted
+                  small
+                  onClick={() => sharingSet.has(p.id) && setFocusedId(p.id)}
+                  className="w-44 sm:w-full"
+                />
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div
+            ref={gridRef}
+            className="h-full flex flex-wrap content-center items-center justify-center gap-3"
+          >
+            {gridPeople.map((p) => (
+              <Tile
+                key={p.id}
+                p={p}
+                stream={streams[p.id]}
+                isMe={p.id === myId}
+                sharing={sharingSet.has(p.id)}
+                muted
+                onClick={() => sharingSet.has(p.id) && setFocusedId(p.id)}
+                style={{ width: `${tilePx}px` }}
+              />
+            ))}
+          </div>
+        )}
       </main>
 
       <footer className="flex-none flex flex-wrap items-center justify-center gap-2 py-3 px-3">
@@ -540,8 +619,9 @@ export default function Room() {
   );
 }
 
-function Tile({ p, stream, isMe, focused = false, small = false, muted, volume = 1, onClick, className = '', style }) {
+function Tile({ p, stream, isMe, sharing = false, focused = false, small = false, muted, volume = 1, onClick, className = '', style }) {
   const videoRef = useRef(null);
+  const avatarColor = useAvatarColor(p.avatarUrl, p.color);
 
   useEffect(() => {
     if (videoRef.current && stream) videoRef.current.srcObject = stream;
@@ -553,11 +633,12 @@ function Tile({ p, stream, isMe, focused = false, small = false, muted, volume =
   }, [volume, stream]);
 
   const hasVideo = !!stream;
+  const clickable = (sharing || hasVideo) && !focused;
   return (
     <div
       onClick={onClick}
-      className={`relative rounded-xl overflow-hidden flex-none transition-[width] duration-200 ease-out ${hasVideo && !focused ? 'cursor-pointer' : ''} ${focused ? '' : 'aspect-video'} ${className}`}
-      style={{ background: hasVideo ? '#000' : p.color, ...style }}
+      className={`relative rounded-xl overflow-hidden flex-none transition-[width] duration-200 ease-out ${clickable ? 'cursor-pointer' : ''} ${focused ? '' : 'aspect-video'} ${className}`}
+      style={{ background: hasVideo ? '#000' : avatarColor, ...style }}
     >
       {hasVideo ? (
         <video
@@ -587,15 +668,20 @@ function Tile({ p, stream, isMe, focused = false, small = false, muted, volume =
         </div>
       )}
       <span className="absolute bottom-2 left-2 max-w-[85%] bg-black/70 text-fg1 text-[12px] font-medium px-2 py-1 rounded-md flex items-center gap-1.5">
-        {hasVideo && <IconMonitor size={12} className="flex-none" />}
+        {(sharing || hasVideo) && <IconMonitor size={12} className="flex-none" />}
         {p.owner && <IconCrown size={12} className="flex-none text-yellow" />}
         <span className="truncate">
           {p.name}
           {isMe && ' (você)'}
         </span>
       </span>
-      {hasVideo && !focused && !small && (
-        <span className="absolute top-2 right-2 bg-black/70 text-fg3 text-[11px] px-2 py-1 rounded-md">clique pra focar</span>
+      {sharing && !hasVideo && !isMe && (
+        <span className="absolute top-2 right-2 bg-red text-white text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md">
+          ao vivo
+        </span>
+      )}
+      {clickable && !small && (
+        <span className="absolute top-2 left-2 bg-black/70 text-fg3 text-[11px] px-2 py-1 rounded-md">clique pra assistir</span>
       )}
     </div>
   );

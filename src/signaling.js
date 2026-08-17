@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
-import { deleteRoom, getRoom, roomEvents, touchRoom } from './rooms.js';
+import { deleteRoom, getRoom, redeemJoinTicket, roomEvents, touchRoom } from './rooms.js';
 import { PROTOCOL_VERSION } from './protocol.js';
 
 // Fallback identities for people who skip picking a name.
@@ -46,7 +46,16 @@ export function attachSignaling(httpServer) {
       ws.isAlive = true;
     });
 
-    handleParticipant(room, ws, url.searchParams.get('name'), key === room.streamKey, url.searchParams.get('avatar'));
+    // A join ticket (from the bot's personalized link) is the authoritative
+    // identity source; name/avatar params are the self-declared fallback.
+    const ticket = redeemJoinTicket(room, url.searchParams.get('j'));
+    handleParticipant(
+      room,
+      ws,
+      ticket?.name ?? url.searchParams.get('name'),
+      key === room.streamKey,
+      ticket?.avatarUrl ?? url.searchParams.get('avatar'),
+    );
   });
 
   const heartbeat = setInterval(() => {
@@ -116,6 +125,10 @@ function handleParticipant(room, ws, name, owner, avatarUrl) {
     if (!msg) return;
     if (msg.type === 'signal' && msg.to) {
       send(room.participants.get(msg.to)?.ws, { type: 'signal', from: id, sharer: msg.sharer, data: msg.data });
+    } else if ((msg.type === 'watch' || msg.type === 'unwatch') && msg.to) {
+      // Viewer (un)subscribes to a sharer's stream — sharer reacts by
+      // offering or tearing down that one connection.
+      send(room.participants.get(msg.to)?.ws, { type: msg.type, from: id });
     } else if (msg.type === 'share-start') {
       room.sharing.add(id);
       broadcastRoster(room);

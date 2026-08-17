@@ -42,6 +42,7 @@ function hydrate(shell) {
     voiceChannelId: shell.voiceChannelId ?? null,
     guildId: shell.guildId ?? null,
     voiceRoster: [], // RAM only — refreshed by the bot from the voice channel
+    joinTickets: new Map(), // token -> { name, avatarUrl, createdAt } — RAM only
     game: null,
     gameIconUrl: null,
     live: false,
@@ -96,6 +97,25 @@ export function getRoom(id) {
 
 export function listRooms() {
   return [...rooms.values()];
+}
+
+// Personalized join links: the bot verifies WHO clicked (Discord tells it) and
+// mints a short-lived ticket carrying that identity. Tickets live in RAM only.
+const TICKET_TTL_MS = 6 * 60 * 60 * 1000;
+
+export function issueJoinTicket(room, identity) {
+  for (const [token, t] of room.joinTickets) {
+    if (Date.now() - t.createdAt > TICKET_TTL_MS) room.joinTickets.delete(token);
+  }
+  const token = crypto.randomBytes(9).toString('base64url');
+  room.joinTickets.set(token, { ...identity, createdAt: Date.now() });
+  return token;
+}
+
+export function redeemJoinTicket(room, token) {
+  const ticket = room.joinTickets.get(token ?? '');
+  if (!ticket || Date.now() - ticket.createdAt > TICKET_TTL_MS) return null;
+  return ticket; // reusable within TTL so reconnects keep working
 }
 
 export function touchRoom(room) {
