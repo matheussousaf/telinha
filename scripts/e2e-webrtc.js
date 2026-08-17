@@ -3,12 +3,20 @@
 // and asserts real frames arrive at the viewer. Run: node scripts/e2e-webrtc.js
 import puppeteer from 'puppeteer';
 
-process.env.PORT = '4001';
-process.env.BASE_URL = 'http://localhost:4001';
-await import('../src/server.js');
-await new Promise((r) => setTimeout(r, 300));
+// E2E_BASE=https://ranx.gg targets a deployed server instead of booting one.
+// E2E_RELAY=1 forces iceTransportPolicy 'relay' — the test then only passes
+// if the TURN server actually works.
+const TARGET = process.env.E2E_BASE;
+const FORCE_RELAY = process.env.E2E_RELAY === '1';
 
-const base = 'http://localhost:4001';
+if (!TARGET) {
+  process.env.PORT = '4001';
+  process.env.BASE_URL = 'http://localhost:4001';
+  await import('../src/server.js');
+  await new Promise((r) => setTimeout(r, 300));
+}
+const base = TARGET ?? 'http://localhost:4001';
+console.log(`target: ${base}${FORCE_RELAY ? ' (TURN relay forced)' : ''}`);
 const res = await fetch(`${base}/api/rooms`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
@@ -35,10 +43,29 @@ function wirePage(page, label) {
   page.on('pageerror', (e) => console.log(`[${label} PAGEERROR] ${e.message}`));
 }
 
+// Instrument RTCPeerConnection: optionally force relay, always log ICE progress.
+function instrumentRtc(page, forceRelay) {
+  return page.evaluateOnNewDocument((relay) => {
+    const Orig = window.RTCPeerConnection;
+    window.RTCPeerConnection = class extends Orig {
+      constructor(cfg = {}) {
+        super(relay ? { ...cfg, iceTransportPolicy: 'relay' } : cfg);
+        this.addEventListener('iceconnectionstatechange', () =>
+          console.warn(`[ice] ${this.iceConnectionState}`),
+        );
+        this.addEventListener('icecandidateerror', (e) =>
+          console.warn(`[ice-err] ${e.errorCode} ${e.errorText} url=${e.url}`),
+        );
+      }
+    };
+  }, forceRelay);
+}
+
 // Streamer: stand in for getDisplayMedia with the fake camera — the capture
 // API isn't the suspect; the transport and rendering path is.
 const streamer = await browser.newPage();
 wirePage(streamer, 'share');
+await instrumentRtc(streamer, FORCE_RELAY);
 await streamer.evaluateOnNewDocument(() => {
   navigator.mediaDevices.getDisplayMedia = (opts) =>
     navigator.mediaDevices.getUserMedia({ video: true, audio: false });
@@ -55,6 +82,7 @@ await streamer.evaluate(() => {
 // Viewer
 const viewer = await browser.newPage();
 wirePage(viewer, 'watch');
+await instrumentRtc(viewer, FORCE_RELAY);
 await viewer.goto(`${base}/watch/${room.id}`);
 
 // Give the handshake a few seconds, then interrogate the viewer's video element.

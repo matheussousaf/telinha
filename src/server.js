@@ -32,8 +32,11 @@ app.get('/watch/:room', (_req, res) => res.sendFile(INDEX_HTML));
 app.get('/api/config', (_req, res) => {
   const iceServers = [{ urls: process.env.STUN_URL ?? 'stun:stun.l.google.com:19302' }];
   if (process.env.TURN_URL) {
+    // Offer UDP and TCP transports; TCP saves viewers on UDP-hostile networks.
+    const urls = [process.env.TURN_URL];
+    if (!process.env.TURN_URL.includes('?')) urls.push(`${process.env.TURN_URL}?transport=tcp`);
     iceServers.push({
-      urls: process.env.TURN_URL,
+      urls,
       username: process.env.TURN_USERNAME,
       credential: process.env.TURN_PASSWORD,
     });

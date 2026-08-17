@@ -86,13 +86,17 @@ export default function Watch() {
       pcRef.current = pc;
       pc.ontrack = (e) => {
         if (videoRef.current) videoRef.current.srcObject = e.streams[0];
-        setOverlay(null);
+        // Overlay stays until the video actually renders frames (onPlaying) —
+        // clearing it here painted a black screen while ICE was still failing.
+        setOverlay('Conectando à transmissão…');
       };
       pc.onicecandidate = (e) => {
         if (e.candidate) send({ type: 'signal', data: { candidate: e.candidate } });
       };
       pc.onconnectionstatechange = () => {
-        if (pcRef.current?.connectionState === 'failed') setOverlay('Conexão perdida.');
+        const s = pcRef.current?.connectionState;
+        if (s === 'failed') setOverlay('Não achei rota de vídeo até quem transmite (NAT/firewall). Recarrega a página; se persistir, avisa quem transmite.');
+        else if (s === 'disconnected') setOverlay('Conexão instável — tentando recuperar…');
       };
       await pc.setRemoteDescription(data.sdp);
       const answer = await pc.createAnswer();
@@ -117,7 +121,14 @@ export default function Watch() {
       <TopBar title={title} />
 
       <div className="video-frame">
-        <video ref={videoRef} autoPlay playsInline muted={muted} className="w-full h-full block" />
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted={muted}
+          onPlaying={() => setOverlay(null)}
+          className="w-full h-full block"
+        />
         {overlay && <div className="overlay">{overlay}</div>}
       </div>
 
