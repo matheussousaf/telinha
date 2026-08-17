@@ -354,6 +354,9 @@ export default function Room() {
       media = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: 60 }, width: { max: 1920 }, height: { max: 1080 } },
         audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        systemAudio: 'include', // surface the audio checkbox whenever the OS allows it
+        surfaceSwitching: 'include', // lets the sharer swap tabs mid-stream via the capture bar
+        selfBrowserSurface: 'exclude', // don't offer the room's own tab (mirror hall)
       });
     } catch {
       return; // picker cancelled
@@ -540,6 +543,7 @@ export default function Room() {
               onClick={() => setFocusedId(null)}
               className="flex-1 min-h-0 tile-focused"
             />
+            {gridPeople.length > 0 && (
             <div className="flex-none flex sm:flex-col gap-2 overflow-x-auto sm:overflow-y-auto sm:w-52 h-28 sm:h-auto">
               {gridPeople.map((p) => (
                 <Tile
@@ -555,6 +559,7 @@ export default function Room() {
                 />
               ))}
             </div>
+            )}
           </div>
         ) : (
           <div

@@ -72,21 +72,36 @@ function instrumentRtc(page, forceRelay) {
   }, forceRelay);
 }
 
-// Streamer: stand in for getDisplayMedia with the fake camera — the capture
-// API isn't the suspect; the transport and rendering path is.
+// Stand in for getDisplayMedia with the fake camera — the capture API isn't
+// the suspect; the transport and rendering path is.
+const patchCapture = (page) =>
+  page.evaluateOnNewDocument(() => {
+    navigator.mediaDevices.getDisplayMedia = () =>
+      navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+  });
+
+const clickShare = (page) =>
+  page.evaluate(() => {
+    const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.includes('Compartilhar'));
+    if (!btn) throw new Error('share button not found');
+    btn.click();
+  });
+
+const clickTileByName = (page, name) =>
+  page.evaluate((n) => {
+    const tile = [...document.querySelectorAll('div')].find(
+      (d) => typeof d.className === 'string' && d.className.includes('cursor-pointer') && d.innerText.includes(n),
+    );
+    if (!tile) throw new Error(`clickable tile not found for "${n}"`);
+    tile.click();
+  }, name);
+
 const streamer = await browser.newPage();
 wirePage(streamer, 'share');
 await instrumentRtc(streamer, FORCE_RELAY);
-await streamer.evaluateOnNewDocument(() => {
-  navigator.mediaDevices.getDisplayMedia = (opts) =>
-    navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-});
+await patchCapture(streamer);
 await joinRoom(streamer, `${base}${new URL(room.ownerUrl).pathname}${new URL(room.ownerUrl).search}`, 'e2e-dono');
-await streamer.evaluate(() => {
-  const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.includes('Compartilhar'));
-  if (!btn) throw new Error('share button not found');
-  btn.click();
-});
+await clickShare(streamer);
 
 // Viewer joins through the plain room link
 const viewer = await browser.newPage();
@@ -97,7 +112,8 @@ await joinRoom(viewer, `${base}/room/${room.id}`, 'e2e-amigo');
 // Give the handshake a few seconds, then interrogate the viewer's video element.
 await new Promise((r) => setTimeout(r, 6000));
 
-const state = await viewer.evaluate(async () => {
+async function frameState(page) {
+  return page.evaluate(async () => {
   const v = document.querySelector('video');
   const first = v.currentTime;
   await new Promise((r) => setTimeout(r, 1200));
@@ -112,27 +128,65 @@ const state = await viewer.evaluate(async () => {
     for (let i = 0; i < d.length; i += 4) sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
     luma = sum / (d.length / 4);
   }
-  return {
-    hasSrcObject: !!v.srcObject,
-    videoWidth: v.videoWidth,
-    videoHeight: v.videoHeight,
-    paused: v.paused,
-    readyState: v.readyState,
-    timeAdvancing: v.currentTime > first,
-    currentTime: v.currentTime,
-    meanLuma: Math.round(luma * 10) / 10,
-    overlayText: document.querySelector('main')?.innerText?.split('\n').slice(0, 6).join(' | '),
-  };
+    return {
+      hasSrcObject: !!v?.srcObject,
+      videoWidth: v?.videoWidth ?? 0,
+      paused: v?.paused ?? true,
+      timeAdvancing: v ? v.currentTime > first : false,
+      meanLuma: Math.round(luma * 10) / 10,
+    };
+  });
+}
+
+const isGood = (s) => s.hasSrcObject && s.videoWidth > 0 && !s.paused && s.timeAdvancing && s.meanLuma > 1;
+
+const state = await frameState(viewer);
+console.log('first watch:', JSON.stringify(state));
+const firstOk = isGood(state);
+
+// Regression check: unfocus (click the big tile), then focus the sharer again.
+await viewer.evaluate(() => document.querySelector('.tile-focused')?.click());
+await new Promise((r) => setTimeout(r, 1500));
+await viewer.evaluate(() => {
+  const tile = [...document.querySelectorAll('div')].find(
+    (d) => typeof d.className === 'string' && d.className.includes('cursor-pointer'),
+  );
+  if (!tile) throw new Error('no clickable sharer tile after unfocus');
+  tile.click();
 });
+await new Promise((r) => setTimeout(r, 5000));
 
-console.log('viewer state:', JSON.stringify(state, null, 2));
+const state2 = await frameState(viewer);
+console.log('after unfocus and refocus:', JSON.stringify(state2));
+const secondOk = isGood(state2);
 
-const ok = state.hasSrcObject && state.videoWidth > 0 && !state.paused && state.timeAdvancing && state.meanLuma > 1;
-console.log(
-  ok
-    ? '\nE2E PASS: viewer is receiving and rendering real frames (not black).'
-    : '\nE2E FAIL: media not flowing or rendering black — see state above.',
-);
+// The reported bug: TWO sharers, switch A -> B -> back to A.
+const sharer2 = await browser.newPage();
+wirePage(sharer2, 'share2');
+await instrumentRtc(sharer2, FORCE_RELAY);
+await patchCapture(sharer2);
+await joinRoom(sharer2, `${base}/room/${room.id}`, 'e2e-b');
+await clickShare(sharer2);
+await new Promise((r) => setTimeout(r, 1500));
+
+await clickTileByName(viewer, 'e2e-b'); // switch A -> B
+await new Promise((r) => setTimeout(r, 5000));
+const state3 = await frameState(viewer);
+console.log('watching second sharer:', JSON.stringify(state3));
+const thirdOk = isGood(state3);
+
+await clickTileByName(viewer, 'e2e-dono'); // switch B -> back to A
+await new Promise((r) => setTimeout(r, 5000));
+const state4 = await frameState(viewer);
+console.log('back to first sharer:', JSON.stringify(state4));
+const fourthOk = isGood(state4);
+
+console.log(firstOk ? 'ok    first watch renders frames' : 'FAIL  first watch broken');
+console.log(secondOk ? 'ok    re-watch after unfocus renders frames' : 'FAIL  re-watch after unfocus broken');
+console.log(thirdOk ? 'ok    switch to second sharer renders frames' : 'FAIL  switch to second sharer broken');
+console.log(fourthOk ? 'ok    switch BACK to first sharer renders frames' : 'FAIL  switch back broken (reported bug)');
+const allOk = firstOk && secondOk && thirdOk && fourthOk;
+console.log(allOk ? '\nE2E PASS: all watch/switch paths render real frames.' : '\nE2E FAIL — see states above.');
 
 await browser.close();
-process.exit(ok ? 0 : 1);
+process.exit(allOk ? 0 : 1);
