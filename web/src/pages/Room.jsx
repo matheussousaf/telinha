@@ -5,7 +5,7 @@ import Logo from '../components/Logo.jsx';
 import {
   IconCheck, IconCrown, IconGamepad, IconLink, IconLogout, IconMonitor,
   IconPip, IconScreenShare, IconStop, IconVolume, IconVolumeOff, IconX,
-} from '../components/icons.jsx';
+} from '../components/icons.jsx'; // (Tile also uses IconX/IconVolume for voltar + ativar som)
 
 // Best-fit tile width (Discord-style): try every column count, keep the
 // largest tile that still fits everyone in the container at 16:9.
@@ -94,6 +94,7 @@ export default function Room() {
   const unmountedRef = useRef(false);
   const gridRef = useRef(null);
   const prevFocusRef = useRef(null);
+  const manualUnfocusRef = useRef(false); // user chose the grid — don't yank focus back
 
   // --- UI state ---
   const [nameInput, setNameInput] = useState(localStorage.getItem('telinha:name') ?? '');
@@ -297,9 +298,20 @@ export default function Room() {
     setFocusedId((f) => {
       const stillValid = f && sharingSet.has(f) && ids.has(f);
       if (stillValid) return f;
+      if (manualUnfocusRef.current) return null; // respect a deliberate unfocus
       const firstOther = sharing.find((id) => id !== myId);
       return firstOther ?? (sharing.length ? sharing[0] : null);
     });
+  }
+
+  function focusOn(id) {
+    manualUnfocusRef.current = false;
+    setFocusedId(id);
+  }
+
+  function unfocus() {
+    manualUnfocusRef.current = true;
+    setFocusedId(null);
   }
 
   async function handleSignal(msg) {
@@ -338,11 +350,19 @@ export default function Room() {
     pcsOutRef.current.set(peerId, pc);
     for (const track of myStreamRef.current.getTracks()) {
       if (track.kind === 'video') {
-        pc.addTransceiver(track, {
+        const tr = pc.addTransceiver(track, {
           direction: 'sendonly',
           streams: [myStreamRef.current],
-          sendEncodings: [{ maxBitrate: 6_000_000 }],
+          sendEncodings: [{ maxBitrate: 10_000_000 }],
         });
+        // Prefer VP9 — noticeably better quality-per-bit than the VP8 default.
+        try {
+          const codecs = [...RTCRtpSender.getCapabilities('video').codecs];
+          codecs.sort((a, b) => (b.mimeType === 'video/VP9' ? 1 : 0) - (a.mimeType === 'video/VP9' ? 1 : 0));
+          tr.setCodecPreferences(codecs);
+        } catch {
+          // codec preferences are best-effort
+        }
       } else {
         pc.addTransceiver(track, { direction: 'sendonly', streams: [myStreamRef.current] });
       }
@@ -584,7 +604,7 @@ export default function Room() {
               focused
               muted={globalMuted}
               volume={focusedVolume}
-              onClick={() => setFocusedId(null)}
+              onClick={unfocus}
               className="flex-1 min-h-0 tile-focused"
             />
             {gridPeople.length > 0 && (
@@ -598,7 +618,7 @@ export default function Room() {
                   sharing={sharingSet.has(p.id)}
                   muted
                   small
-                  onClick={() => sharingSet.has(p.id) && setFocusedId(p.id)}
+                  onClick={() => sharingSet.has(p.id) && focusOn(p.id)}
                   className="w-44 sm:w-full"
                 />
               ))}
@@ -618,7 +638,7 @@ export default function Room() {
                 isMe={p.id === myId}
                 sharing={sharingSet.has(p.id)}
                 muted
-                onClick={() => sharingSet.has(p.id) && setFocusedId(p.id)}
+                onClick={() => sharingSet.has(p.id) && focusOn(p.id)}
                 style={{ width: `${tilePx}px` }}
               />
             ))}
@@ -671,15 +691,37 @@ export default function Room() {
 function Tile({ p, stream, isMe, sharing = false, focused = false, small = false, muted, volume = 1, onClick, className = '', style }) {
   const videoRef = useRef(null);
   const avatarColor = useAvatarColor(p.avatarUrl, p.color);
+  const [autoplayBlocked, setAutoplayBlocked] = useState(false);
 
+  // Attach and actively play. If the browser blocks unmuted autoplay (e.g.
+  // auto-rejoin means zero interaction yet), fall back to muted playback and
+  // surface a click-to-unmute prompt instead of silent black.
   useEffect(() => {
-    if (videoRef.current && stream) videoRef.current.srcObject = stream;
+    const v = videoRef.current;
+    if (!v || !stream) return;
+    v.srcObject = stream;
+    v.play().catch(() => {
+      if (v.muted) return;
+      v.muted = true;
+      setAutoplayBlocked(true);
+      v.play().catch(() => {});
+    });
   }, [stream]);
 
   // Audio policy: only the focused stream is audible, at its remembered volume.
   useEffect(() => {
     if (videoRef.current) videoRef.current.volume = volume;
   }, [volume, stream]);
+
+  function enableSound(e) {
+    e.stopPropagation();
+    const v = videoRef.current;
+    if (v) {
+      v.muted = false;
+      v.play().catch(() => {});
+    }
+    setAutoplayBlocked(false);
+  }
 
   const hasVideo = !!stream;
   const clickable = (sharing || hasVideo) && !focused;
@@ -731,6 +773,25 @@ function Tile({ p, stream, isMe, sharing = false, focused = false, small = false
       )}
       {clickable && !small && (
         <span className="absolute top-2 left-2 bg-black/70 text-fg3 text-[11px] px-2 py-1 rounded-md">clique pra assistir</span>
+      )}
+      {focused && (
+        <button
+          className="absolute top-2 right-2 bg-black/70 hover:bg-black/90 text-fg1 text-[12px] px-2.5 py-1.5 rounded-md flex items-center gap-1.5 cursor-pointer border-0"
+          onClick={(e) => {
+            e.stopPropagation();
+            onClick?.();
+          }}
+        >
+          <IconX size={12} /> voltar
+        </button>
+      )}
+      {focused && autoplayBlocked && !isMe && (
+        <button
+          className="absolute inset-0 m-auto w-fit h-fit bg-black/80 hover:bg-black text-fg1 text-[14px] font-medium px-4 py-2.5 rounded-lg flex items-center gap-2 cursor-pointer border border-line"
+          onClick={enableSound}
+        >
+          <IconVolume size={16} /> ativar som
+        </button>
       )}
     </div>
   );

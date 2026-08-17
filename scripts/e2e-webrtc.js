@@ -76,8 +76,9 @@ function instrumentRtc(page, forceRelay) {
 // the suspect; the transport and rendering path is.
 const patchCapture = (page) =>
   page.evaluateOnNewDocument(() => {
+    // Fake devices: moving test pattern + sine tone, so audio is measurable.
     navigator.mediaDevices.getDisplayMedia = () =>
-      navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      navigator.mediaDevices.getUserMedia({ video: true, audio: true });
   });
 
 const clickShare = (page) =>
@@ -144,6 +145,28 @@ const state = await frameState(viewer);
 console.log('first watch:', JSON.stringify(state));
 const firstOk = isGood(state);
 
+// Audio: does the focused stream carry an audible track?
+const audioState = await viewer.evaluate(async () => {
+  const v = document.querySelector('video');
+  const tracks = v?.srcObject ? v.srcObject.getAudioTracks() : [];
+  let rms = 0;
+  if (tracks.length) {
+    const ac = new AudioContext();
+    const src = ac.createMediaStreamSource(new MediaStream([tracks[0]]));
+    const an = ac.createAnalyser();
+    an.fftSize = 2048;
+    src.connect(an);
+    await new Promise((r) => setTimeout(r, 700));
+    const buf = new Float32Array(an.fftSize);
+    an.getFloatTimeDomainData(buf);
+    rms = Math.sqrt(buf.reduce((a, x) => a + x * x, 0) / buf.length);
+    await ac.close();
+  }
+  return { audioTracks: tracks.length, muted: v?.muted, volume: v?.volume, rms: Number(rms.toFixed(4)) };
+});
+console.log('audio state:', JSON.stringify(audioState));
+const audioOk = audioState.audioTracks > 0 && audioState.muted === false && audioState.rms > 0.005;
+
 // Regression check: unfocus (click the big tile), then focus the sharer again.
 await viewer.evaluate(() => document.querySelector('.tile-focused')?.click());
 await new Promise((r) => setTimeout(r, 1500));
@@ -182,10 +205,11 @@ console.log('back to first sharer:', JSON.stringify(state4));
 const fourthOk = isGood(state4);
 
 console.log(firstOk ? 'ok    first watch renders frames' : 'FAIL  first watch broken');
+console.log(audioOk ? 'ok    audio track present, unmuted, audible' : 'FAIL  audio missing/muted/silent');
 console.log(secondOk ? 'ok    re-watch after unfocus renders frames' : 'FAIL  re-watch after unfocus broken');
 console.log(thirdOk ? 'ok    switch to second sharer renders frames' : 'FAIL  switch to second sharer broken');
 console.log(fourthOk ? 'ok    switch BACK to first sharer renders frames' : 'FAIL  switch back broken (reported bug)');
-const allOk = firstOk && secondOk && thirdOk && fourthOk;
+const allOk = firstOk && audioOk && secondOk && thirdOk && fourthOk;
 console.log(allOk ? '\nE2E PASS: all watch/switch paths render real frames.' : '\nE2E FAIL — see states above.');
 
 await browser.close();
