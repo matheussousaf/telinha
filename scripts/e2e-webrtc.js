@@ -30,7 +30,7 @@ async function joinRoom(page, url, name) {
   await page.waitForSelector('#name');
   await page.type('#name', name);
   await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.includes('Entrar'));
+    const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.includes('Entrar na sala'));
     btn.click();
   });
   await new Promise((r) => setTimeout(r, 800)); // let the WS connect

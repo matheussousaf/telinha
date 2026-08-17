@@ -2,6 +2,38 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { fetchRtcConfig, openSignaling, isStale, STALE_PAGE_MSG } from '../api.js';
 import Logo from '../components/Logo.jsx';
+import {
+  IconCheck, IconCrown, IconDiscord, IconGamepad, IconLink, IconLogout, IconMonitor,
+  IconPip, IconScreenShare, IconStop, IconVolume, IconVolumeOff, IconX,
+} from '../components/icons.jsx';
+
+// Best-fit tile width (Discord-style): try every column count, keep the
+// largest tile that still fits everyone in the container at 16:9.
+function bestTileWidth(w, h, n, gap = 12, maxW = 1000) {
+  if (!w || !h || !n) return 320;
+  let best = 160;
+  for (let cols = 1; cols <= n; cols++) {
+    const rows = Math.ceil(n / cols);
+    const byWidth = (w - gap * (cols - 1)) / cols;
+    const byHeight = ((h - gap * (rows - 1)) / rows) * (16 / 9);
+    best = Math.max(best, Math.min(byWidth, byHeight, maxW));
+  }
+  return Math.floor(best);
+}
+
+function useElementSize(ref) {
+  const [size, setSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) =>
+      setSize({ w: entry.contentRect.width, h: entry.contentRect.height }),
+    );
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return size;
+}
 
 export default function Room() {
   const { roomId } = useParams();
@@ -20,10 +52,13 @@ export default function Room() {
   const knownIdsRef = useRef(new Set());
   const thumbTimerRef = useRef(null);
   const unmountedRef = useRef(false);
+  const gridRef = useRef(null);
 
   // --- UI state ---
   const [nameInput, setNameInput] = useState(localStorage.getItem('telinha:name') ?? '');
   const [joined, setJoined] = useState(false);
+  const [discordClientId, setDiscordClientId] = useState(null);
+  const myAvatar = useMemo(() => localStorage.getItem('telinha:avatar'), [joined]);
   const [roomName, setRoomName] = useState('…');
   const [me, setMe] = useState(null);
   const [participants, setParticipants] = useState([]);
@@ -32,15 +67,38 @@ export default function Room() {
   const [iAmSharing, setIAmSharing] = useState(false);
   const [focusedId, setFocusedId] = useState(null);
   const [globalMuted, setGlobalMuted] = useState(false);
+  const [volumes, setVolumes] = useState({}); // sharerId -> 0..1, remembered per person
   const [game, setGame] = useState(null);
   const [notice, setNotice] = useState(null); // terminal overlays: closed/not found/stale
   const [copied, setCopied] = useState(false);
 
   const roomUrl = `${window.location.origin}/room/${roomId}`;
+  const gridSize = useElementSize(gridRef);
 
   useEffect(() => {
     document.title = `${roomName} — telinha`;
   }, [roomName]);
+
+  // Config early: the modal needs the Discord client id; the rtc config is
+  // reused when we actually join. Coming back from the Discord login, join
+  // straight away with the fetched profile.
+  useEffect(() => {
+    fetchRtcConfig().then((c) => {
+      rtcRef.current = c;
+      setDiscordClientId(c.discordClientId ?? null);
+    });
+    if (localStorage.getItem('telinha:autojoin') === '1') {
+      localStorage.removeItem('telinha:autojoin');
+      if ((localStorage.getItem('telinha:name') ?? '').trim()) setJoined(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function discordLogin() {
+    const redirect = encodeURIComponent(`${window.location.origin}/discord-callback`);
+    const state = encodeURIComponent(window.location.pathname + window.location.search);
+    window.location.href = `https://discord.com/oauth2/authorize?client_id=${discordClientId}&response_type=token&scope=identify&redirect_uri=${redirect}&state=${state}`;
+  }
 
   useEffect(() => {
     if (!joined) return;
@@ -72,8 +130,10 @@ export default function Room() {
   }
 
   function connect() {
-    const params = { room: roomId, name: nameInput.trim() };
+    const params = { room: roomId, name: (localStorage.getItem('telinha:name') ?? nameInput).trim() };
     if (ownerKey) params.key = ownerKey;
+    const avatar = localStorage.getItem('telinha:avatar');
+    if (avatar) params.avatar = avatar;
     wsRef.current = openSignaling(params, handleMessage, (e) => {
       if (unmountedRef.current) return;
       if (e.code === 4004) return setNotice('Sala não encontrada — ou já foi encerrada.');
@@ -84,7 +144,7 @@ export default function Room() {
       pcsInRef.current.clear();
       for (const pc of pcsOutRef.current.values()) pc.close();
       pcsOutRef.current.clear();
-      setStreams((s) => {
+      setStreams(() => {
         const mine = myStreamRef.current;
         return mine && meRef.current ? { [meRef.current.id]: mine } : {};
       });
@@ -324,20 +384,34 @@ export default function Room() {
           <div className="flex items-center gap-2 text-fg1 font-bold mb-4">
             <Logo /> telinha
           </div>
+          {discordClientId && (
+            <>
+              <button className="btn w-full" onClick={discordLogin}>
+                <IconDiscord size={16} /> Entrar com Discord
+              </button>
+              <div className="flex items-center gap-3 my-4 text-fg4 text-xs">
+                <span className="flex-1 h-px bg-line" /> ou <span className="flex-1 h-px bg-line" />
+              </div>
+            </>
+          )}
           <label className="label" htmlFor="name">Como te chamam?</label>
-          <input
-            id="name"
-            className="input"
-            type="text"
-            placeholder="seu nome ou apelido"
-            maxLength={32}
-            value={nameInput}
-            onChange={(e) => setNameInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && joinRoom()}
-            autoFocus
-          />
-          <button className="btn w-full mt-4" onClick={joinRoom}>Entrar na sala</button>
-          <p className="text-fg4 text-xs mt-3 mb-0">Sem cadastro — o nome aparece só pra quem tá na sala.</p>
+          <div className="flex items-center gap-2">
+            {myAvatar && <img src={myAvatar} alt="" className="w-10 h-10 rounded-full flex-none" referrerPolicy="no-referrer" />}
+            <input
+              id="name"
+              className="input"
+              type="text"
+              placeholder="seu nome ou apelido"
+              maxLength={32}
+              value={nameInput}
+              onChange={(e) => setNameInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && joinRoom()}
+            />
+          </div>
+          <button className="btn btn-secondary w-full mt-4" onClick={joinRoom}>Entrar na sala</button>
+          <p className="text-fg4 text-xs mt-3 mb-0">
+            Sem cadastro — nome e foto aparecem só pra quem tá na sala, e nada fica salvo no servidor.
+          </p>
         </div>
       </div>
     );
@@ -347,22 +421,27 @@ export default function Room() {
   const sharingSet = new Set(sharingIds);
   const focused = focusedId && sharingSet.has(focusedId) ? participants.find((p) => p.id === focusedId) : null;
   const gridPeople = focused ? participants.filter((p) => p.id !== focused.id) : participants;
-  const tileWidth =
-    gridPeople.length <= 1 ? 'min(80%, 110vh)' : gridPeople.length <= 4 ? 'min(46%, 60vh)' : 'min(31%, 40vh)';
+  const tilePx = bestTileWidth(gridSize.w, gridSize.h, Math.max(gridPeople.length, 1));
+  const focusedVolume = focusedId != null ? (volumes[focusedId] ?? 1) : 1;
 
   return (
     <div className="h-screen bg-black flex flex-col overflow-hidden">
       <header className="flex items-center gap-3 px-4 py-3 flex-none min-w-0">
-        <span aria-hidden="true">🔊</span>
+        <IconVolume size={18} className="text-fg4 flex-none" />
         <span className="text-fg1 font-bold truncate">{roomName}</span>
-        {game && <span className="pill hidden sm:inline-flex">🎮 {game}</span>}
+        {game && (
+          <span className="pill hidden sm:inline-flex">
+            <IconGamepad size={13} /> {game}
+          </span>
+        )}
         <span className="flex-1" />
         <button className="btn btn-secondary h-8 px-3 text-[13px]" onClick={copyInvite}>
-          {copied ? 'copiado!' : '🔗 copiar convite'}
+          {copied ? <IconCheck size={14} /> : <IconLink size={14} />}
+          {copied ? 'copiado!' : 'copiar convite'}
         </button>
         {me?.owner && (
           <button className="btn btn-danger h-8 px-3 text-[13px]" onClick={closeRoom}>
-            Encerrar sala
+            <IconX size={14} /> Encerrar sala
           </button>
         )}
       </header>
@@ -375,11 +454,13 @@ export default function Room() {
             isMe={focused.id === myId}
             focused
             muted={globalMuted}
+            volume={focusedVolume}
             onClick={() => setFocusedId(null)}
             className="flex-1 min-h-0 tile-focused"
           />
         )}
         <div
+          ref={gridRef}
           className={
             focused
               ? 'flex-none h-24 flex gap-2 justify-center overflow-x-auto'
@@ -395,45 +476,71 @@ export default function Room() {
               muted
               small={!!focused}
               onClick={() => sharingSet.has(p.id) && setFocusedId(p.id)}
-              style={focused ? { width: '9.5rem' } : { width: tileWidth }}
+              style={focused ? { width: '9.5rem' } : { width: `${tilePx}px` }}
             />
           ))}
         </div>
       </main>
 
-      <footer className="flex-none flex items-center justify-center gap-2 py-3">
+      <footer className="flex-none flex flex-wrap items-center justify-center gap-2 py-3 px-3">
         {!iAmSharing ? (
-          <button className="btn" onClick={startShare}>🖥️ Compartilhar tela</button>
+          <button className="btn" onClick={startShare}>
+            <IconScreenShare size={16} /> Compartilhar tela
+          </button>
         ) : (
-          <button className="btn btn-danger" onClick={stopShare}>⏹ Parar de compartilhar</button>
+          <button className="btn btn-danger" onClick={stopShare}>
+            <IconStop size={16} /> Parar
+          </button>
         )}
-        <button className="btn btn-secondary" onClick={() => setGlobalMuted((m) => !m)}>
-          {globalMuted ? '🔇 Sem som' : '🔊 Som'}
+        <button className="btn btn-secondary" onClick={() => setGlobalMuted((m) => !m)} title={globalMuted ? 'Ativar som' : 'Silenciar'}>
+          {globalMuted ? <IconVolumeOff size={16} /> : <IconVolume size={16} />}
         </button>
+        {focused && focused.id !== myId && (
+          <label className="flex items-center gap-2 bg-bg1 border border-line rounded-lg h-[38px] px-3" title={`Volume de ${focused.name}`}>
+            <span className="text-fg4 text-[12px] max-w-24 truncate">{focused.name}</span>
+            <input
+              type="range"
+              className="vol"
+              min="0"
+              max="100"
+              value={Math.round((globalMuted ? 0 : focusedVolume) * 100)}
+              disabled={globalMuted}
+              onChange={(e) => setVolumes((v) => ({ ...v, [focused.id]: Number(e.target.value) / 100 }))}
+            />
+          </label>
+        )}
         <button
           className="btn btn-secondary"
           onClick={() => document.querySelector('.tile-focused video')?.requestPictureInPicture?.().catch(() => {})}
+          title="Pop-out"
         >
-          📌 Pop-out
+          <IconPip size={16} />
         </button>
-        <button className="btn btn-secondary" onClick={() => navigate('/')}>Sair</button>
+        <button className="btn btn-secondary" onClick={() => navigate('/')}>
+          <IconLogout size={16} /> Sair
+        </button>
       </footer>
     </div>
   );
 }
 
-function Tile({ p, stream, isMe, focused = false, small = false, muted, onClick, className = '', style }) {
+function Tile({ p, stream, isMe, focused = false, small = false, muted, volume = 1, onClick, className = '', style }) {
   const videoRef = useRef(null);
 
   useEffect(() => {
     if (videoRef.current && stream) videoRef.current.srcObject = stream;
   }, [stream]);
 
+  // Audio policy: only the focused stream is audible, at its remembered volume.
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.volume = volume;
+  }, [volume, stream]);
+
   const hasVideo = !!stream;
   return (
     <div
       onClick={onClick}
-      className={`relative rounded-xl overflow-hidden flex-none ${hasVideo && !focused ? 'cursor-pointer' : ''} ${focused ? '' : 'aspect-video'} ${className}`}
+      className={`relative rounded-xl overflow-hidden flex-none transition-[width] duration-200 ease-out ${hasVideo && !focused ? 'cursor-pointer' : ''} ${focused ? '' : 'aspect-video'} ${className}`}
       style={{ background: hasVideo ? '#000' : p.color, ...style }}
     >
       {hasVideo ? (
@@ -446,19 +553,30 @@ function Tile({ p, stream, isMe, focused = false, small = false, muted, onClick,
         />
       ) : (
         <div className="absolute inset-0 flex items-center justify-center">
-          <span
-            className={`rounded-full bg-black/30 flex items-center justify-center ${small ? 'w-10 h-10 text-xl' : 'w-20 h-20 text-4xl'}`}
-            aria-hidden="true"
-          >
-            {p.emoji}
-          </span>
+          {p.avatarUrl ? (
+            <img
+              src={p.avatarUrl}
+              alt=""
+              referrerPolicy="no-referrer"
+              className={`rounded-full object-cover ${small ? 'w-10 h-10' : 'w-20 h-20'}`}
+            />
+          ) : (
+            <span
+              className={`rounded-full bg-black/30 flex items-center justify-center ${small ? 'w-10 h-10 text-xl' : 'w-20 h-20 text-4xl'}`}
+              aria-hidden="true"
+            >
+              {p.emoji}
+            </span>
+          )}
         </div>
       )}
-      <span className="absolute bottom-2 left-2 max-w-[85%] truncate bg-black/70 text-fg1 text-[12px] font-medium px-2 py-1 rounded-md">
-        {hasVideo && '🖥️ '}
-        {p.owner && '👑 '}
-        {p.name}
-        {isMe && ' (você)'}
+      <span className="absolute bottom-2 left-2 max-w-[85%] bg-black/70 text-fg1 text-[12px] font-medium px-2 py-1 rounded-md flex items-center gap-1.5">
+        {hasVideo && <IconMonitor size={12} className="flex-none" />}
+        {p.owner && <IconCrown size={12} className="flex-none text-yellow" />}
+        <span className="truncate">
+          {p.name}
+          {isMe && ' (você)'}
+        </span>
       </span>
       {hasVideo && !focused && !small && (
         <span className="absolute top-2 right-2 bg-black/70 text-fg3 text-[11px] px-2 py-1 rounded-md">clique pra focar</span>

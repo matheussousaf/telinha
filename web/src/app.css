@@ -137,6 +137,18 @@
   }
 }
 
+/* Volume slider (Discord-style thin range) */
+.vol {
+  accent-color: var(--color-blurple);
+  width: 110px;
+  height: 4px;
+  cursor: pointer;
+}
+.vol:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* LED dots on status/count readouts */
 #status::before,
 #count::before {

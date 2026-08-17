@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Logo from '../components/Logo.jsx';
+import { IconBot, IconGamepad, IconLock, IconPip, IconZap } from '../components/icons.jsx';
 
 const GITHUB_URL = 'https://github.com/matheussousaf/telinha';
 
@@ -14,17 +15,17 @@ function GitHubIcon({ size = 16 }) {
 
 const FEATURES = [
   {
-    emoji: '⚡',
+    Icon: IconZap,
     title: 'Latência de call',
     text: 'WebRTC direto entre vocês — a stream anda junto com a conversa, não 15 segundos atrás.',
   },
   {
-    emoji: '🤖',
+    Icon: IconBot,
     title: 'Bot no Discord',
     text: '/telinha cria a sala com o nome do seu canal de voz e posta o convite com thumbnail ao vivo.',
   },
   {
-    emoji: '📌',
+    Icon: IconPip,
     title: 'Pop-out flutuante',
     text: 'Janelinha sempre-no-topo por cima do Discord. O tile do Go Live, só que nosso.',
   },
@@ -130,7 +131,7 @@ export default function Landing() {
               <span className="animate-pulse">●</span> ao vivo
             </span>
             <div className="absolute bottom-3 right-3 flex gap-2">
-              <span className="pill">🎮 valorant</span>
+              <span className="pill"><IconGamepad size={13} /> valorant</span>
               <span className="pill">4 assistindo</span>
             </div>
           </div>
@@ -141,7 +142,7 @@ export default function Landing() {
       <div className="grid sm:grid-cols-3 gap-8 mt-20 pt-8 border-t border-line">
         {FEATURES.map((f) => (
           <div key={f.title} className="flex items-start gap-3">
-            <span className="text-2xl leading-none mt-0.5" aria-hidden="true">{f.emoji}</span>
+            <f.Icon size={20} className="text-blurple flex-none mt-0.5" />
             <div>
               <h3 className="text-fg1 text-sm font-bold m-0">{f.title}</h3>
               <p className="text-fg4 text-[13px] leading-snug mt-1 mb-0">{f.text}</p>
@@ -151,7 +152,9 @@ export default function Landing() {
       </div>
 
       <div className="card p-6 mt-16 max-w-xl mx-auto text-center">
-        <h3 className="text-fg1 text-base font-bold m-0">🔒 Seguro por desenho, aberto por princípio</h3>
+        <h3 className="text-fg1 text-base font-bold m-0 flex items-center justify-center gap-2">
+          <IconLock size={16} className="text-blurple" /> Seguro por desenho, aberto por princípio
+        </h3>
         <p className="text-fg4 text-[13px] leading-relaxed mt-2 mb-0">
           O vídeo vai direto (P2P) de quem transmite pra quem assiste — não passa nem fica gravado
           no servidor. As salas têm link impossível de adivinhar, e a chave de transmissão fica só

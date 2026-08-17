@@ -11,13 +11,15 @@ const ANON_ANIMALS = [
 const AVATAR_EMOJI = ['🦫', '🦜', '🐢', '🦉', '🐬', '🐵', '🦔', '🦝', '🦎', '🐆', '🐒', '🦦', '🐜', '🦤', '🦩', '🐦'];
 const AVATAR_COLORS = ['#5865F2', '#23A55A', '#F0B232', '#ED4245', '#EB459E', '#3BA6C4', '#9B59B6', '#E67E22', '#795548', '#607D8B'];
 
-function makeIdentity(id, name, owner) {
+function makeIdentity(id, name, owner, avatarUrl) {
   const i = crypto.randomInt(ANON_ANIMALS.length);
   return {
     id,
     name: (name || '').trim().slice(0, 32) || `${ANON_ANIMALS[i]} #${crypto.randomInt(1, 100)}`,
     emoji: AVATAR_EMOJI[i],
     color: AVATAR_COLORS[crypto.randomInt(AVATAR_COLORS.length)],
+    // Only Discord CDN avatars pass through — never an arbitrary URL.
+    avatarUrl: avatarUrl?.startsWith('https://cdn.discordapp.com/') ? avatarUrl.slice(0, 256) : null,
     owner,
   };
 }
@@ -44,7 +46,7 @@ export function attachSignaling(httpServer) {
       ws.isAlive = true;
     });
 
-    handleParticipant(room, ws, url.searchParams.get('name'), key === room.streamKey);
+    handleParticipant(room, ws, url.searchParams.get('name'), key === room.streamKey, url.searchParams.get('avatar'));
   });
 
   const heartbeat = setInterval(() => {
@@ -90,9 +92,9 @@ export function notifyRoomInfo(room) {
   broadcast(room, { type: 'room-info', name: room.name, game: room.game });
 }
 
-function handleParticipant(room, ws, name, owner) {
+function handleParticipant(room, ws, name, owner, avatarUrl) {
   const id = crypto.randomUUID();
-  const identity = makeIdentity(id, name, owner);
+  const identity = makeIdentity(id, name, owner, avatarUrl);
   const token = crypto.randomBytes(12).toString('base64url'); // authorizes thumbnail uploads
   room.participants.set(id, { ws, identity, token });
   touchRoom(room);

@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useParams, useLocation } from '
 import './app.css';
 import Landing from './pages/Landing.jsx';
 import Room from './pages/Room.jsx';
+import DiscordCallback from './pages/DiscordCallback.jsx';
 
 // Old /share and /watch links keep working — same room, same query string.
 function LegacyRedirect() {
@@ -16,6 +17,7 @@ createRoot(document.getElementById('root')).render(
     <Routes>
       <Route path="/" element={<Landing />} />
       <Route path="/room/:roomId" element={<Room />} />
+      <Route path="/discord-callback" element={<DiscordCallback />} />
       <Route path="/share/:roomId" element={<LegacyRedirect />} />
       <Route path="/watch/:roomId" element={<LegacyRedirect />} />
     </Routes>

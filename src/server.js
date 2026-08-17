@@ -43,7 +43,7 @@ app.get('/api/config', (_req, res) => {
       credential: process.env.TURN_PASSWORD,
     });
   }
-  res.json({ iceServers });
+  res.json({ iceServers, discordClientId: process.env.DISCORD_CLIENT_ID ?? null });
 });
 
 app.post('/api/rooms', (req, res) => {
