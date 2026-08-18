@@ -235,6 +235,8 @@ export default function Room() {
           if (s.type === 'inbound-rtp' && s.kind === 'video') {
             next.fps = s.framesPerSecond ?? 0;
             next.res = `${s.frameWidth ?? 0}×${s.frameHeight ?? 0}`;
+            const codec = s.codecId && report.get(s.codecId);
+            if (codec) next.codec = codec.mimeType?.replace('video/', '');
             if (prevTime) next.kbps = Math.max(0, Math.round(((s.bytesReceived - prevBytes) * 8) / (s.timestamp - prevTime)));
             prevBytes = s.bytesReceived;
             prevTime = s.timestamp;
@@ -255,9 +257,15 @@ export default function Room() {
           if (s.type === 'outbound-rtp' && s.kind === 'video') {
             next.sendFps = s.framesPerSecond ?? 0;
             next.limit = s.qualityLimitationReason;
+            const codec = s.codecId && report.get(s.codecId);
+            if (codec) next.sendCodec = codec.mimeType?.replace('video/', '');
           }
         });
       }
+      // What the capture itself is producing — if THIS is low, the encoder is
+      // innocent (static content, occluded window, power saving, etc).
+      const track = myStreamRef.current?.getVideoTracks()[0];
+      if (track) next.captureFps = Math.round(track.getSettings().frameRate ?? 0);
       setStats(next);
     }, 2000);
     return () => clearInterval(timer);
@@ -814,9 +822,10 @@ export default function Room() {
       {statsOn && stats && (
         <div className="flex-none flex justify-center px-3 pb-1">
           <code className="bg-bg1 border border-line rounded-lg px-3 py-1.5 text-[12px] text-fg3 font-mono">
-            {stats.fps != null && `↓ ${stats.fps}fps ${stats.res} ${stats.kbps ?? '…'}kbps · ${stats.route ?? '…'} ${stats.rtt ?? ''}`}
+            {stats.fps != null &&
+              `↓ ${stats.fps}fps ${stats.res} ${stats.codec ?? ''} ${stats.kbps ?? '…'}kbps · ${stats.route ?? '…'} ${stats.rtt ?? ''}`}
             {stats.sendFps != null &&
-              `${stats.fps != null ? '  |  ' : ''}↑ ${stats.sendFps}fps${stats.limit && stats.limit !== 'none' ? ` — limitado por ${stats.limit === 'cpu' ? 'CPU (encoder)' : stats.limit === 'bandwidth' ? 'banda' : stats.limit}` : ''}`}
+              `${stats.fps != null ? '  |  ' : ''}↑ ${stats.sendFps}fps ${stats.sendCodec ?? ''}${stats.captureFps ? ` (captura ${stats.captureFps}fps)` : ''}${stats.limit && stats.limit !== 'none' ? ` — limitado por ${stats.limit === 'cpu' ? 'CPU (encoder)' : stats.limit === 'bandwidth' ? 'banda' : stats.limit}` : ''}`}
             {stats.fps == null && stats.sendFps == null && 'sem streams ativos'}
           </code>
         </div>
