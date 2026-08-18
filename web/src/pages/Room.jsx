@@ -138,6 +138,7 @@ export default function Room() {
   const [game, setGame] = useState(null);
   const [notice, setNotice] = useState(null); // terminal overlays: closed/not found/stale
   const [copied, setCopied] = useState(false);
+  const [shareWarning, setShareWarning] = useState(null); // transient capture problems
 
   const roomUrl = `${window.location.origin}/room/${roomId}`;
   const gridSize = useElementSize(gridRef, focusedId != null);
@@ -417,19 +418,36 @@ export default function Room() {
     send({ type: 'signal', to: peerId, sharer: meRef.current.id, data: { sdp: pc.localDescription } });
   }
 
-  async function startShare() {
-    let media;
+  async function captureScreen() {
+    const base = {
+      video: { frameRate: { ideal: 60 }, width: { max: 1920 }, height: { max: 1080 } },
+      systemAudio: 'include', // surface the audio checkbox whenever the OS allows it
+      surfaceSwitching: 'include', // lets the sharer swap tabs mid-stream via the capture bar
+      selfBrowserSurface: 'exclude', // don't offer the room's own tab (mirror hall)
+    };
     try {
-      media = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 60 }, width: { max: 1920 }, height: { max: 1080 } },
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-        systemAudio: 'include', // surface the audio checkbox whenever the OS allows it
-        surfaceSwitching: 'include', // lets the sharer swap tabs mid-stream via the capture bar
-        selfBrowserSurface: 'exclude', // don't offer the room's own tab (mirror hall)
-      });
-    } catch {
-      return; // picker cancelled
+      // audio: true (no processing constraints) — mic-style constraints are a
+      // known failure source for system-audio loopback capture.
+      return await navigator.mediaDevices.getDisplayMedia({ ...base, audio: true });
+    } catch (err) {
+      if (err?.name === 'NotAllowedError') return null; // user cancelled the picker
+      console.warn('[share] capture with audio failed:', err?.name, err?.message);
+      setShareWarning('Não rolou capturar com áudio — escolhe de novo, vai sem o som do sistema.');
+      try {
+        return await navigator.mediaDevices.getDisplayMedia({ ...base, audio: false });
+      } catch (err2) {
+        if (err2?.name !== 'NotAllowedError') {
+          setShareWarning(`Falha ao compartilhar (${err2?.name ?? 'erro desconhecido'}). Tenta de novo?`);
+        }
+        return null;
+      }
     }
+  }
+
+  async function startShare() {
+    setShareWarning(null);
+    const media = await captureScreen();
+    if (!media) return;
     myStreamRef.current = media;
     const [videoTrack] = media.getVideoTracks();
     videoTrack.contentHint = 'motion';
@@ -690,6 +708,17 @@ export default function Room() {
         )}
       </main>
 
+      {shareWarning && (
+        <div className="flex-none flex justify-center px-3">
+          <button
+            className="bg-bg1 border border-yellow/50 text-fg2 text-[13px] px-3 py-2 rounded-lg cursor-pointer"
+            onClick={() => setShareWarning(null)}
+            title="fechar aviso"
+          >
+            ⚠️ {shareWarning}
+          </button>
+        </div>
+      )}
       <footer className="flex-none flex flex-wrap items-center justify-center gap-2 py-3 px-3">
         {!iAmSharing ? (
           <button className="btn" onClick={startShare}>
