@@ -266,7 +266,12 @@ export default function Room() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusedId]);
 
+  const lkConnectSeqRef = useRef(0);
+
   async function connectLiveKit(room) {
+    // Serialize: a newer call (e.g. WS reconnect mid-setup) supersedes this one,
+    // otherwise two racing connects double-publish ("track already published").
+    const seq = ++lkConnectSeqRef.current;
     lkRef.current?.disconnect();
     if (!lkUrlRef.current) {
       setNotice('Servidor de mídia não configurado (LIVEKIT_URL).');
@@ -277,11 +282,13 @@ export default function Room() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: tokenRef.current }),
     });
+    if (seq !== lkConnectSeqRef.current) return;
     if (!res.ok) {
       setNotice('Não consegui autorizar a mídia — recarrega a página.');
       return;
     }
     const { token } = await res.json();
+    if (seq !== lkConnectSeqRef.current) return;
     // adaptiveStream is off: it sizes quality by elements LiveKit attached,
     // but we drive our own <video> elements — so we pick layers explicitly
     // (focused = HIGH, tiles = LOW) in applyQuality().
@@ -299,11 +306,18 @@ export default function Room() {
     lk.on(RoomEvent.ParticipantConnected, () => applySubscriptions());
 
     await lk.connect(lkUrlRef.current, token);
+    if (seq !== lkConnectSeqRef.current) {
+      lk.disconnect();
+      return;
+    }
     applySubscriptions();
 
-    // Reconnected mid-share: republish under the fresh session.
+    // Sharing already (started before connect finished, or reconnecting):
+    // publish only if this session hasn't yet — double-publish throws.
     if (myStreamRef.current) {
-      await publishTracks(myStreamRef.current);
+      if (lk.localParticipant.videoTrackPublications.size === 0) {
+        await publishTracks(myStreamRef.current);
+      }
       send({ type: 'share-start' });
     }
   }
@@ -478,7 +492,9 @@ export default function Room() {
     setIAmSharing(true);
     setStreams((s) => ({ ...s, [meRef.current.id]: media }));
     try {
-      await publishTracks(media);
+      // If LiveKit is still connecting, connectLiveKit's post-connect path
+      // publishes for us — publishing here too would double-publish.
+      if (lkRef.current?.state === 'connected') await publishTracks(media);
     } catch (err) {
       console.error('[livekit] publish failed:', err);
       setShareWarning('Falha ao publicar a transmissão — recarrega a página.');
