@@ -203,6 +203,20 @@ async function handleTelinha(interaction) {
   tracked.set(room.id, { message, user: interaction.user, timer: null, state: 'waiting', roomName: room.name });
 }
 
+// Bake the pfp into a small data URI so nobody's browser ever needs to reach
+// Discord's CDN; falls back to the plain URL if the fetch misbehaves.
+async function fetchAvatarDataUri(url) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return url;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > 70_000) return url;
+    return `data:${res.headers.get('content-type') ?? 'image/png'};base64,${buf.toString('base64')}`;
+  } catch {
+    return url;
+  }
+}
+
 async function handleJoinButton(interaction) {
   const room = getRoom(interaction.customId.slice('join:'.length));
   if (!room) {
@@ -211,7 +225,9 @@ async function handleJoinButton(interaction) {
   const member = interaction.member;
   const identity = {
     name: (member?.displayName ?? interaction.user.displayName).slice(0, 32),
-    avatarUrl: (member ?? interaction.user).displayAvatarURL({ size: 128, extension: 'png' }),
+    avatarUrl: await fetchAvatarDataUri(
+      (member ?? interaction.user).displayAvatarURL({ size: 128, extension: 'png' }),
+    ),
   };
   const token = issueJoinTicket(room, identity);
   let url = `${BASE_URL}/room/${room.id}?j=${token}`;

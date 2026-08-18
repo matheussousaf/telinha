@@ -119,6 +119,18 @@ const badUp = await fetch(`${base}/api/rooms/${room.id}/thumbnail?token=nope`, {
 });
 check(badUp.status === 403, 'thumbnail upload with junk token rejected');
 
+// Base64 avatar handover is applied to the identity and broadcast
+guest.send(JSON.stringify({ type: 'avatar', data: 'data:image/webp;base64,UklGRg==' }));
+const avatarRoster = await owner.next('participants', (m) =>
+  m.participants.some((p) => p.id === guestId && p.avatarUrl?.startsWith('data:image/')),
+);
+check(!!avatarRoster, 'base64 avatar broadcast in roster');
+const junkBefore = Date.now();
+guest.send(JSON.stringify({ type: 'avatar', data: 'javascript:alert(1)' }));
+await new Promise((r) => setTimeout(r, 200));
+const stillClean = await (await fetch(`${base}/api/rooms/${room.id}`)).json();
+check(stillClean.id === room.id && Date.now() > junkBefore, 'junk avatar payload ignored');
+
 // Guest stops sharing — room stays open
 guest.send(JSON.stringify({ type: 'share-stop' }));
 await owner.next('participants', (m) => m.sharing.length === 0);

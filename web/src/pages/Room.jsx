@@ -40,6 +40,27 @@ function useElementSize(ref, rebind) {
 // headers, so canvas readback works.
 const avatarColorCache = new Map();
 
+// Snapshot an avatar URL into a small base64 data URI (128px WebP, ~10-20KB)
+// so the pfp lives in the client's localStorage, independent of any CDN.
+async function toDataUri(url, size = 128) {
+  try {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    await new Promise((res, rej) => {
+      img.onload = res;
+      img.onerror = rej;
+      img.src = url;
+    });
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    c.getContext('2d').drawImage(img, 0, 0, size, size);
+    const data = c.toDataURL('image/webp', 0.85);
+    return data.length <= 90_000 ? data : null;
+  } catch {
+    return null;
+  }
+}
+
 function useAvatarColor(url, fallback) {
   const [color, setColor] = useState(() => (url && avatarColorCache.get(url)) || fallback);
   useEffect(() => {
@@ -201,8 +222,10 @@ export default function Room() {
     const params = { room: roomId, name: (localStorage.getItem('telinha:name') ?? nameInput).trim() };
     if (ownerKey) params.key = ownerKey;
     if (joinToken) params.j = joinToken;
+    // Legacy CDN URLs still travel as a query param; base64 avatars are sent
+    // as a message after welcome (too big for a URL).
     const avatar = localStorage.getItem('telinha:avatar');
-    if (avatar && !joinToken) params.avatar = avatar;
+    if (avatar?.startsWith('https://') && !joinToken) params.avatar = avatar;
     wsRef.current = openSignaling(params, handleMessage, (e) => {
       if (unmountedRef.current) return;
       if (e.code === 4004) return setNotice('Sala não encontrada — ou já foi encerrada.');
@@ -228,9 +251,22 @@ export default function Room() {
       meRef.current = msg.you;
       tokenRef.current = msg.token;
       setMe(msg.you);
-      // Remember the confirmed identity so a reload rejoins seamlessly.
+      // Remember the confirmed identity so a reload rejoins seamlessly —
+      // avatars are kept as client-held base64, never as a CDN dependency.
       localStorage.setItem('telinha:name', msg.you.name);
-      if (msg.you.avatarUrl) localStorage.setItem('telinha:avatar', msg.you.avatarUrl);
+      if (msg.you.avatarUrl?.startsWith('data:image/')) {
+        localStorage.setItem('telinha:avatar', msg.you.avatarUrl);
+      } else if (msg.you.avatarUrl) {
+        toDataUri(msg.you.avatarUrl).then((data) => {
+          if (data) {
+            localStorage.setItem('telinha:avatar', data);
+            send({ type: 'avatar', data });
+          }
+        });
+      } else {
+        const saved = localStorage.getItem('telinha:avatar');
+        if (saved?.startsWith('data:image/')) send({ type: 'avatar', data: saved });
+      }
       setRoomName(msg.name);
       setGame(msg.game);
       knownIdsRef.current = new Set(msg.participants.map((p) => p.id));
@@ -245,6 +281,12 @@ export default function Room() {
       }
     } else if (msg.type === 'participants') {
       applyRoster(msg.participants, msg.sharing);
+      // Our own identity may have been enriched (e.g. avatar handover).
+      const mine = msg.participants.find((p) => p.id === meRef.current?.id);
+      if (mine) {
+        meRef.current = mine;
+        setMe(mine);
+      }
     } else if (msg.type === 'room-info') {
       setGame(msg.game);
       setRoomName(msg.name);
@@ -453,9 +495,11 @@ export default function Room() {
     if (window.confirm('Encerrar a sala para todo mundo?')) send({ type: 'close' });
   }
 
-  function pickIdentity(member) {
+  async function pickIdentity(member) {
     localStorage.setItem('telinha:name', member.name);
-    localStorage.setItem('telinha:avatar', member.avatarUrl);
+    const data = await toDataUri(member.avatarUrl);
+    if (data) localStorage.setItem('telinha:avatar', data);
+    else localStorage.setItem('telinha:avatar', member.avatarUrl); // conversion failed — keep the URL
     setNameInput(member.name);
     setJoined(true);
   }

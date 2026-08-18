@@ -11,6 +11,14 @@ const ANON_ANIMALS = [
 const AVATAR_EMOJI = ['🦫', '🦜', '🐢', '🦉', '🐬', '🐵', '🦔', '🦝', '🦎', '🐆', '🐒', '🦦', '🐜', '🦤', '🦩', '🐦'];
 const AVATAR_COLORS = ['#5865F2', '#23A55A', '#F0B232', '#ED4245', '#EB459E', '#3BA6C4', '#9B59B6', '#E67E22', '#795548', '#607D8B'];
 
+// Avatars may be Discord CDN URLs or client-held base64 data URIs — nothing else.
+function safeAvatar(a) {
+  if (!a) return null;
+  if (a.startsWith('https://cdn.discordapp.com/')) return a.slice(0, 256);
+  if (a.startsWith('data:image/') && a.length <= 100_000) return a;
+  return null;
+}
+
 function makeIdentity(id, name, owner, avatarUrl) {
   const i = crypto.randomInt(ANON_ANIMALS.length);
   return {
@@ -18,8 +26,7 @@ function makeIdentity(id, name, owner, avatarUrl) {
     name: (name || '').trim().slice(0, 32) || `${ANON_ANIMALS[i]} #${crypto.randomInt(1, 100)}`,
     emoji: AVATAR_EMOJI[i],
     color: AVATAR_COLORS[crypto.randomInt(AVATAR_COLORS.length)],
-    // Only Discord CDN avatars pass through — never an arbitrary URL.
-    avatarUrl: avatarUrl?.startsWith('https://cdn.discordapp.com/') ? avatarUrl.slice(0, 256) : null,
+    avatarUrl: safeAvatar(avatarUrl),
     owner,
   };
 }
@@ -139,6 +146,13 @@ function handleParticipant(room, ws, name, owner, avatarUrl) {
       }
     } else if (msg.type === 'share-stop') {
       stopSharing(room, id);
+    } else if (msg.type === 'avatar') {
+      // Client hands over its base64 pfp copy — RAM only, dies with the session.
+      const a = typeof msg.data === 'string' && msg.data.startsWith('data:image/') ? safeAvatar(msg.data) : null;
+      if (a) {
+        identity.avatarUrl = a;
+        broadcastRoster(room);
+      }
     } else if (msg.type === 'close' && identity.owner) {
       closeRoom(room);
     }
