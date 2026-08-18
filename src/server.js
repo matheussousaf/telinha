@@ -67,21 +67,38 @@ app.get('/api/rooms/:id', (req, res) => {
 app.post('/api/rooms/:id/thumbnail', express.raw({ type: 'image/jpeg', limit: '1mb' }), (req, res) => {
   const room = getRoom(req.params.id);
   if (!room) return res.status(404).end();
-  const authorized = [...room.participants.values()].some((p) => p.token === req.query.token);
-  if (!authorized) return res.status(403).end();
+  const entry = [...room.participants.entries()].find(([, p]) => p.token === req.query.token);
+  if (!entry) return res.status(403).end();
   if (Buffer.isBuffer(req.body) && req.body.length > 0) {
-    room.thumbnail = req.body;
-    room.thumbnailAt = Date.now();
+    room.thumbnails.set(entry[0], { buf: req.body, at: Date.now() });
   }
   res.status(204).end();
 });
 
-app.get('/thumbs/:file', (req, res) => {
-  const room = getRoom(req.params.file.replace(/\.jpg$/, ''));
-  if (!room?.thumbnail) return res.status(404).end();
+function latestThumb(room) {
+  let latest = null;
+  for (const t of room.thumbnails.values()) if (!latest || t.at > latest.at) latest = t;
+  return latest;
+}
+
+// Per-sharer preview (the "shared but not focused" tile state).
+app.get('/thumbs/:room/:pid', (req, res) => {
+  const room = getRoom(req.params.room);
+  const t = room?.thumbnails.get(req.params.pid.replace(/\.jpg$/, ''));
+  if (!t) return res.status(404).end();
   res.set('Content-Type', 'image/jpeg');
   res.set('Cache-Control', 'no-store');
-  res.send(room.thumbnail);
+  res.send(t.buf);
+});
+
+// Legacy room-level thumbnail (Discord embed): newest of any sharer.
+app.get('/thumbs/:file', (req, res) => {
+  const room = getRoom(req.params.file.replace(/\.jpg$/, ''));
+  const t = room && latestThumb(room);
+  if (!t) return res.status(404).end();
+  res.set('Content-Type', 'image/jpeg');
+  res.set('Cache-Control', 'no-store');
+  res.send(t.buf);
 });
 
 const server = http.createServer(app);

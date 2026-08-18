@@ -143,6 +143,15 @@ export default function Room() {
   const roomUrl = `${window.location.origin}/room/${roomId}`;
   const gridSize = useElementSize(gridRef, focusedId != null);
 
+  // Refresh cadence for "shared but not focused" tile previews (the ~10s
+  // thumbnails sharers already upload for the Discord embed).
+  const [thumbTick, setThumbTick] = useState(0);
+  useEffect(() => {
+    if (!joined) return;
+    const t = setInterval(() => setThumbTick((n) => n + 1), 10_000);
+    return () => clearInterval(t);
+  }, [joined]);
+
   useEffect(() => {
     document.title = `${roomName} — telinha`;
   }, [roomName]);
@@ -680,6 +689,7 @@ export default function Room() {
                   sharing={sharingSet.has(p.id)}
                   muted
                   small
+                  previewUrl={sharingSet.has(p.id) && !streams[p.id] && p.id !== myId ? `/thumbs/${roomId}/${p.id}.jpg?t=${thumbTick}` : null}
                   onClick={() => sharingSet.has(p.id) && focusOn(p.id)}
                   className="w-44 sm:w-full"
                 />
@@ -700,6 +710,7 @@ export default function Room() {
                 isMe={p.id === myId}
                 sharing={sharingSet.has(p.id)}
                 muted
+                previewUrl={sharingSet.has(p.id) && !streams[p.id] && p.id !== myId ? `/thumbs/${roomId}/${p.id}.jpg?t=${thumbTick}` : null}
                 onClick={() => sharingSet.has(p.id) && focusOn(p.id)}
                 style={{ width: `${tilePx}px` }}
               />
@@ -761,7 +772,7 @@ export default function Room() {
   );
 }
 
-function Tile({ p, stream, isMe, sharing = false, focused = false, small = false, muted, volume = 1, onClick, className = '', style }) {
+function Tile({ p, stream, isMe, sharing = false, focused = false, small = false, muted, volume = 1, previewUrl = null, onClick, className = '', style }) {
   const videoRef = useRef(null);
   const avatarColor = useAvatarColor(p.avatarUrl, p.color);
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
@@ -839,6 +850,17 @@ function Tile({ p, stream, isMe, sharing = false, focused = false, small = false
           {isMe && ' (você)'}
         </span>
       </span>
+      {previewUrl && (
+        // "Shared but not focused": ~10s-fresh screenshot preview over the
+        // avatar — looks live without downloading the stream.
+        <img
+          src={previewUrl}
+          alt=""
+          className="absolute inset-0 w-full h-full object-cover"
+          onError={(e) => (e.currentTarget.style.display = 'none')}
+          onLoad={(e) => (e.currentTarget.style.display = '')}
+        />
+      )}
       {sharing && !hasVideo && !isMe && (
         <span className="absolute top-2 right-2 bg-red text-white text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md">
           ao vivo

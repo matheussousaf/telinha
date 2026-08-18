@@ -255,8 +255,10 @@ function buildEmbed(room, user, state) {
     embed.setFooter({ text: `${room.participants.size} na sala` });
     // Discord fetches this URL itself, so it only works with a public BASE_URL;
     // the ?t= cache-buster changes with each new thumbnail upload.
-    if (room.thumbnailAt && !/localhost|127\.0\.0\.1/.test(BASE_URL)) {
-      embed.setImage(`${BASE_URL}/thumbs/${room.id}.jpg?t=${room.thumbnailAt}`);
+    let newestAt = 0;
+    for (const t of room.thumbnails?.values() ?? []) newestAt = Math.max(newestAt, t.at);
+    if (newestAt && !/localhost|127\.0\.0\.1/.test(BASE_URL)) {
+      embed.setImage(`${BASE_URL}/thumbs/${room.id}.jpg?t=${newestAt}`);
     }
   } else if (state === 'closed') {
     embed.setColor(0x555555).setDescription('🚪 Sala encerrada pelo dono. Valeu!');

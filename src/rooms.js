@@ -49,8 +49,7 @@ function hydrate(shell) {
     liveAt: 0,
     participants: new Map(), // participantId -> { ws, identity, token } — never persisted
     sharing: new Set(),
-    thumbnail: null, // RAM only, gone on restart
-    thumbnailAt: 0,
+    thumbnails: new Map(), // participantId -> { buf, at } — RAM only, gone on restart
   };
 }
 

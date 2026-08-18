@@ -167,6 +167,7 @@ function handleParticipant(room, ws, name, owner, avatarUrl) {
 }
 
 function stopSharing(room, id) {
+  room.thumbnails.delete(id); // no stale preview once the share ends
   if (!room.sharing.delete(id)) return;
   broadcastRoster(room);
   if (room.sharing.size === 0 && room.live) {
