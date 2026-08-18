@@ -3,8 +3,8 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { fetchRtcConfig, openSignaling, isStale, STALE_PAGE_MSG } from '../api.js';
 import Logo from '../components/Logo.jsx';
 import {
-  IconCheck, IconCrown, IconEye, IconEyeOff, IconGamepad, IconLink, IconLogout, IconMonitor,
-  IconPip, IconScreenShare, IconStop, IconVolume, IconVolumeOff, IconX,
+  IconActivity, IconCheck, IconCrown, IconEye, IconEyeOff, IconGamepad, IconLink, IconLogout,
+  IconMonitor, IconPip, IconScreenShare, IconStop, IconVolume, IconVolumeOff, IconX,
 } from '../components/icons.jsx';
 
 // Best-fit tile width (Discord-style): try every column count, keep the
@@ -140,6 +140,8 @@ export default function Room() {
   const [notice, setNotice] = useState(null); // terminal overlays: closed/not found/stale
   const [copied, setCopied] = useState(false);
   const [shareWarning, setShareWarning] = useState(null); // transient capture problems
+  const [statsOn, setStatsOn] = useState(false);
+  const [stats, setStats] = useState(null);
 
   const roomUrl = `${window.location.origin}/room/${roomId}`;
   const gridSize = useElementSize(gridRef, focusedId != null);
@@ -212,6 +214,54 @@ export default function Room() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [joined]);
+
+  // Live diagnostics: receive fps/res/bitrate + route (P2P vs TURN) for the
+  // focused stream, send fps + limitation reason when sharing.
+  useEffect(() => {
+    if (!statsOn) {
+      setStats(null);
+      return;
+    }
+    let prevBytes = 0;
+    let prevTime = 0;
+    const timer = setInterval(async () => {
+      const next = {};
+      const inPc = focusedId ? pcsInRef.current.get(focusedId) : null;
+      if (inPc) {
+        const report = await inPc.getStats();
+        let pair = null;
+        const cands = {};
+        report.forEach((s) => {
+          if (s.type === 'inbound-rtp' && s.kind === 'video') {
+            next.fps = s.framesPerSecond ?? 0;
+            next.res = `${s.frameWidth ?? 0}×${s.frameHeight ?? 0}`;
+            if (prevTime) next.kbps = Math.max(0, Math.round(((s.bytesReceived - prevBytes) * 8) / (s.timestamp - prevTime)));
+            prevBytes = s.bytesReceived;
+            prevTime = s.timestamp;
+          }
+          if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') pair = s;
+          if (s.type === 'local-candidate' || s.type === 'remote-candidate') cands[s.id] = s;
+        });
+        if (pair) {
+          const relay = cands[pair.localCandidateId]?.candidateType === 'relay' || cands[pair.remoteCandidateId]?.candidateType === 'relay';
+          next.route = relay ? 'relé (VPS)' : 'direto (P2P)';
+          if (pair.currentRoundTripTime != null) next.rtt = `${Math.round(pair.currentRoundTripTime * 1000)}ms`;
+        }
+      }
+      const outPc = [...pcsOutRef.current.values()][0];
+      if (outPc) {
+        const report = await outPc.getStats();
+        report.forEach((s) => {
+          if (s.type === 'outbound-rtp' && s.kind === 'video') {
+            next.sendFps = s.framesPerSecond ?? 0;
+            next.limit = s.qualityLimitationReason;
+          }
+        });
+      }
+      setStats(next);
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [statsOn, focusedId]);
 
   function teardownMedia() {
     clearInterval(thumbTimerRef.current);
@@ -431,13 +481,17 @@ export default function Room() {
           streams: [myStreamRef.current],
           sendEncodings: [{ maxBitrate: 10_000_000 }],
         });
-        // Prefer VP9 — noticeably better quality-per-bit than the VP8 default.
+        // Prefer H264 (hardware-encoded on nearly every GPU → real 1080p60),
+        // then VP9 (better quality-per-bit but software-encoded and slow).
         try {
-          const codecs = [...RTCRtpSender.getCapabilities('video').codecs];
-          codecs.sort((a, b) => (b.mimeType === 'video/VP9' ? 1 : 0) - (a.mimeType === 'video/VP9' ? 1 : 0));
+          const rank = (c) => (c.mimeType === 'video/H264' ? 0 : c.mimeType === 'video/VP9' ? 1 : 2);
+          const codecs = [...RTCRtpSender.getCapabilities('video').codecs].sort((a, b) => rank(a) - rank(b));
           tr.setCodecPreferences(codecs);
+          const sp = tr.sender.getParameters();
+          sp.degradationPreference = 'maintain-framerate'; // games: drop pixels, never frames
+          await tr.sender.setParameters(sp);
         } catch {
-          // codec preferences are best-effort
+          // codec/degradation preferences are best-effort
         }
       } else {
         pc.addTransceiver(track, { direction: 'sendonly', streams: [myStreamRef.current] });
@@ -757,6 +811,16 @@ export default function Room() {
         )}
       </main>
 
+      {statsOn && stats && (
+        <div className="flex-none flex justify-center px-3 pb-1">
+          <code className="bg-bg1 border border-line rounded-lg px-3 py-1.5 text-[12px] text-fg3 font-mono">
+            {stats.fps != null && `↓ ${stats.fps}fps ${stats.res} ${stats.kbps ?? '…'}kbps · ${stats.route ?? '…'} ${stats.rtt ?? ''}`}
+            {stats.sendFps != null &&
+              `${stats.fps != null ? '  |  ' : ''}↑ ${stats.sendFps}fps${stats.limit && stats.limit !== 'none' ? ` — limitado por ${stats.limit === 'cpu' ? 'CPU (encoder)' : stats.limit === 'bandwidth' ? 'banda' : stats.limit}` : ''}`}
+            {stats.fps == null && stats.sendFps == null && 'sem streams ativos'}
+          </code>
+        </div>
+      )}
       {shareWarning && (
         <div className="flex-none flex justify-center px-3">
           <button
@@ -801,6 +865,13 @@ export default function Room() {
           title="Pop-out"
         >
           <IconPip size={16} />
+        </button>
+        <button
+          className={`btn btn-secondary ${statsOn ? 'text-blurple' : ''}`}
+          onClick={() => setStatsOn((s) => !s)}
+          title="Estatísticas da transmissão"
+        >
+          <IconActivity size={16} />
         </button>
         <button className="btn btn-secondary" onClick={() => navigate('/')}>
           <IconLogout size={16} /> Sair
