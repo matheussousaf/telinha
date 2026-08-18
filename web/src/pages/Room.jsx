@@ -143,12 +143,12 @@ export default function Room() {
   const roomUrl = `${window.location.origin}/room/${roomId}`;
   const gridSize = useElementSize(gridRef, focusedId != null);
 
-  // Refresh cadence for "shared but not focused" tile previews (the ~10s
-  // thumbnails sharers already upload for the Discord embed).
+  // Refresh cadence for "shared but not focused" tile previews (the
+  // screenshots sharers upload for the Discord embed).
   const [thumbTick, setThumbTick] = useState(0);
   useEffect(() => {
     if (!joined) return;
-    const t = setInterval(() => setThumbTick((n) => n + 1), 10_000);
+    const t = setInterval(() => setThumbTick((n) => n + 1), 30_000);
     return () => clearInterval(t);
   }, [joined]);
 
@@ -441,7 +441,13 @@ export default function Room() {
     } catch (err) {
       if (err?.name === 'NotAllowedError') return null; // user cancelled the picker
       console.warn('[share] capture with audio failed:', err?.name, err?.message);
-      setShareWarning('Não rolou capturar com áudio — escolhe de novo, vai sem o som do sistema.');
+      const why =
+        err?.name === 'NotReadableError'
+          ? 'o Windows bloqueou a captura do som — comum com Voicemeeter/Nahimic/driver de áudio virtual como saída padrão, ou ao compartilhar janela em vez de tela.'
+          : `erro ${err?.name ?? 'desconhecido'} (${err?.message ?? ''}).`;
+      setShareWarning(
+        `Sem áudio do sistema: ${why} Escolhe de novo — vai sem áudio; pra ter som certo, compartilha uma aba do Chrome com “compartilhar áudio”.`,
+      );
       try {
         return await navigator.mediaDevices.getDisplayMedia({ ...base, audio: false });
       } catch (err2) {
@@ -471,7 +477,7 @@ export default function Room() {
     setIAmSharing(true);
     setStreams((s) => ({ ...s, [meRef.current.id]: media }));
     send({ type: 'share-start' }); // watchers subscribe on demand
-    thumbTimerRef.current = setInterval(uploadThumbnail, 10_000);
+    thumbTimerRef.current = setInterval(uploadThumbnail, 15_000);
     setTimeout(uploadThumbnail, 1500);
   }
 
@@ -496,10 +502,11 @@ export default function Room() {
   async function uploadThumbnail() {
     const pv = previewRef.current;
     if (!myStreamRef.current || !pv?.videoWidth) return;
-    thumbCanvas.width = 640;
-    thumbCanvas.height = Math.round((pv.videoHeight / pv.videoWidth) * 640);
+    // 1280px wide so previews stay crisp even on big tiles.
+    thumbCanvas.width = 1280;
+    thumbCanvas.height = Math.round((pv.videoHeight / pv.videoWidth) * 1280);
     thumbCanvas.getContext('2d').drawImage(pv, 0, 0, thumbCanvas.width, thumbCanvas.height);
-    const blob = await new Promise((r) => thumbCanvas.toBlob(r, 'image/jpeg', 0.7));
+    const blob = await new Promise((r) => thumbCanvas.toBlob(r, 'image/jpeg', 0.75));
     if (!blob) return;
     fetch(`/api/rooms/${roomId}/thumbnail?token=${encodeURIComponent(tokenRef.current)}`, {
       method: 'POST',
