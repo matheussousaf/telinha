@@ -156,13 +156,25 @@ const audioState = await viewer.evaluate(async () => {
     const an = ac.createAnalyser();
     an.fftSize = 2048;
     src.connect(an);
-    await new Promise((r) => setTimeout(r, 700));
+    // The fake audio device beeps periodically — sample repeatedly over ~3s
+    // and keep the loudest window so silence gaps don't fake a failure.
     const buf = new Float32Array(an.fftSize);
-    an.getFloatTimeDomainData(buf);
-    rms = Math.sqrt(buf.reduce((a, x) => a + x * x, 0) / buf.length);
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 300));
+      an.getFloatTimeDomainData(buf);
+      rms = Math.max(rms, Math.sqrt(buf.reduce((a, x) => a + x * x, 0) / buf.length));
+    }
     await ac.close();
   }
-  return { audioTracks: tracks.length, muted: v?.muted, volume: v?.volume, rms: Number(rms.toFixed(4)) };
+  return {
+    audioTracks: tracks.length,
+    muted: v?.muted,
+    volume: v?.volume,
+    rms: Number(rms.toFixed(4)),
+    debugStreams: [...document.querySelectorAll('video')].map((el) =>
+      el.srcObject ? el.srcObject.getTracks().map((t) => `${t.kind}:${t.readyState}`).join(',') : 'none',
+    ),
+  };
 });
 console.log('audio state:', JSON.stringify(audioState));
 const audioOk = audioState.audioTracks > 0 && audioState.muted === false && audioState.rms > 0.005;

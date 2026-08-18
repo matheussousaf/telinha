@@ -3,6 +3,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
+import { AccessToken } from 'livekit-server-sdk';
 import { createRoom, getRoom } from './rooms.js';
 import { attachSignaling } from './signaling.js';
 
@@ -43,7 +44,26 @@ app.get('/api/config', (_req, res) => {
       credential: process.env.TURN_PASSWORD,
     });
   }
-  res.json({ iceServers });
+  res.json({ iceServers, livekitUrl: process.env.LIVEKIT_URL ?? null });
+});
+
+// LiveKit access token. Auth chain: the WS welcome hands each participant a
+// secret token; presenting it here proves who you are in that room, and the
+// minted JWT carries the same participant id as its LiveKit identity.
+app.post('/api/rooms/:id/lk-token', express.json(), async (req, res) => {
+  const room = getRoom(req.params.id);
+  if (!room) return res.status(404).json({ error: 'room not found' });
+  const entry = [...room.participants.entries()].find(([, p]) => p.token === req.body?.token);
+  if (!entry) return res.status(403).json({ error: 'unknown participant token' });
+  if (!process.env.LIVEKIT_API_KEY) return res.status(503).json({ error: 'livekit not configured' });
+  const [pid, participant] = entry;
+  const at = new AccessToken(process.env.LIVEKIT_API_KEY, process.env.LIVEKIT_API_SECRET, {
+    identity: pid,
+    name: participant.identity.name,
+    ttl: '12h',
+  });
+  at.addGrant({ room: room.id, roomJoin: true, canPublish: true, canSubscribe: true });
+  res.json({ token: await at.toJwt() });
 });
 
 app.post('/api/rooms', (req, res) => {

@@ -1,5 +1,5 @@
 // Must match src/protocol.js on the server — see the note there.
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 export const STALE_PAGE_MSG = 'Página desatualizada — atualize com Ctrl+Shift+R';
 

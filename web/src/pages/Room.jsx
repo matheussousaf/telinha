@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { Room as LKRoom, RoomEvent, Track } from 'livekit-client';
 import { fetchRtcConfig, openSignaling, isStale, STALE_PAGE_MSG } from '../api.js';
 import Logo from '../components/Logo.jsx';
 import {
@@ -35,31 +36,8 @@ function useElementSize(ref, rebind) {
   return size;
 }
 
-// Dominant-ish color from the avatar (Discord-style tile tint): average the
-// pixels of a tiny downscale, slightly darkened. Discord's CDN sends CORS
-// headers, so canvas readback works.
+// Dominant-ish color from the avatar (Discord-style tile tint).
 const avatarColorCache = new Map();
-
-// Snapshot an avatar URL into a small base64 data URI (128px WebP, ~10-20KB)
-// so the pfp lives in the client's localStorage, independent of any CDN.
-async function toDataUri(url, size = 128) {
-  try {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    await new Promise((res, rej) => {
-      img.onload = res;
-      img.onerror = rej;
-      img.src = url;
-    });
-    const c = document.createElement('canvas');
-    c.width = c.height = size;
-    c.getContext('2d').drawImage(img, 0, 0, size, size);
-    const data = c.toDataURL('image/webp', 0.85);
-    return data.length <= 90_000 ? data : null;
-  } catch {
-    return null;
-  }
-}
 
 function useAvatarColor(url, fallback) {
   const [color, setColor] = useState(() => (url && avatarColorCache.get(url)) || fallback);
@@ -81,7 +59,7 @@ function useAvatarColor(url, fallback) {
           r += d[i]; g += d[i + 1]; b += d[i + 2]; n++;
         }
         if (!n) return;
-        const mut = 0.72; // muted tone, like Discord's tiles
+        const mut = 0.72;
         const col = `rgb(${Math.round((r / n) * mut)}, ${Math.round((g / n) * mut)}, ${Math.round((b / n) * mut)})`;
         avatarColorCache.set(url, col);
         setColor(col);
@@ -95,6 +73,26 @@ function useAvatarColor(url, fallback) {
   return color;
 }
 
+// Snapshot an avatar URL into a small base64 data URI (128px WebP).
+async function toDataUri(url, size = 128) {
+  try {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    await new Promise((res, rej) => {
+      img.onload = res;
+      img.onerror = rej;
+      img.src = url;
+    });
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    c.getContext('2d').drawImage(img, 0, 0, size, size);
+    const data = c.toDataURL('image/webp', 0.85);
+    return data.length <= 90_000 ? data : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function Room() {
   const { roomId } = useParams();
   const navigate = useNavigate();
@@ -103,25 +101,21 @@ export default function Room() {
 
   // --- refs (mutable per-connection state) ---
   const wsRef = useRef(null);
-  const rtcRef = useRef({ iceServers: [] });
+  const lkRef = useRef(null); // LiveKit Room — the entire media plane
+  const lkUrlRef = useRef(null);
   const myStreamRef = useRef(null);
   const previewRef = useRef(null); // offscreen <video> for thumbnails
-  const pcsOutRef = useRef(new Map()); // peerId -> pc carrying MY stream to them
-  const pcsInRef = useRef(new Map()); // sharerId -> pc carrying THEIR stream to me
   const meRef = useRef(null);
   const tokenRef = useRef('');
-  const knownIdsRef = useRef(new Set());
+  const hiddenRef = useRef(new Set());
   const thumbTimerRef = useRef(null);
   const unmountedRef = useRef(false);
   const gridRef = useRef(null);
   const manualUnfocusRef = useRef(false); // user chose the grid — don't yank focus back
-  const watchSentRef = useRef(new Set()); // sharers we've asked to send to us
 
   // --- UI state ---
   const [nameInput, setNameInput] = useState(localStorage.getItem('telinha:name') ?? '');
   const [joinToken, setJoinToken] = useState(() => query.get('j') ?? '');
-  // Personalized links and remembered identities (localStorage only — the
-  // server never stores anyone) skip the join screen entirely.
   const [joined, setJoined] = useState(
     () => !!(query.get('j') ?? '') || !!(localStorage.getItem('telinha:name') ?? '').trim(),
   );
@@ -130,56 +124,27 @@ export default function Room() {
   const [me, setMe] = useState(null);
   const [participants, setParticipants] = useState([]);
   const [sharingIds, setSharingIds] = useState([]);
-  const [streams, setStreams] = useState({}); // sharerId -> MediaStream (only who we watch + own preview)
+  const [streams, setStreams] = useState({}); // participantId -> MediaStream
   const [iAmSharing, setIAmSharing] = useState(false);
   const [focusedId, setFocusedId] = useState(null);
-  const [hiddenIds, setHiddenIds] = useState(() => new Set()); // sharers this user chose not to watch
+  const [hiddenIds, setHiddenIds] = useState(() => new Set());
   const [globalMuted, setGlobalMuted] = useState(false);
-  const [volumes, setVolumes] = useState({}); // sharerId -> 0..1, remembered per person
+  const [volumes, setVolumes] = useState({});
   const [game, setGame] = useState(null);
-  const [notice, setNotice] = useState(null); // terminal overlays: closed/not found/stale
+  const [notice, setNotice] = useState(null);
   const [copied, setCopied] = useState(false);
-  const [shareWarning, setShareWarning] = useState(null); // transient capture problems
+  const [shareWarning, setShareWarning] = useState(null);
   const [statsOn, setStatsOn] = useState(false);
   const [stats, setStats] = useState(null);
 
   const roomUrl = `${window.location.origin}/room/${roomId}`;
   const gridSize = useElementSize(gridRef, focusedId != null);
 
-  // Live tiles: automatically watch every sharer this user hasn't hidden.
-  // Focus is pure layout (size + audio); the eye button opts out per person.
-  useEffect(() => {
-    const myId = meRef.current?.id;
-    if (!myId) return;
-    const want = new Set(sharingIds.filter((id) => id !== myId && !hiddenIds.has(id)));
-    for (const id of want) {
-      if (!watchSentRef.current.has(id)) {
-        watchSentRef.current.add(id);
-        send({ type: 'watch', to: id });
-      }
-    }
-    for (const id of [...watchSentRef.current]) {
-      if (!want.has(id)) {
-        watchSentRef.current.delete(id);
-        send({ type: 'unwatch', to: id });
-        pcsInRef.current.get(id)?.close();
-        pcsInRef.current.delete(id);
-        setStreams((s) => {
-          const { [id]: _, ...rest } = s;
-          return rest;
-        });
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sharingIds, hiddenIds, me]);
-
   useEffect(() => {
     document.title = `${roomName} — telinha`;
   }, [roomName]);
 
-  // While the join screen is up, poll the room for the voice-channel roster
-  // (the bot mirrors who's in the voice call) so people can click their own
-  // face instead of typing anything.
+  // Join-screen roster polling (bot mirrors the voice channel).
   useEffect(() => {
     if (joined) return;
     let cancelled = false;
@@ -204,7 +169,8 @@ export default function Room() {
     if (!joined) return;
     unmountedRef.current = false;
     (async () => {
-      rtcRef.current = await fetchRtcConfig();
+      const cfg = await fetchRtcConfig();
+      lkUrlRef.current = cfg.livekitUrl;
       if (!unmountedRef.current) connect();
     })();
     return () => {
@@ -215,70 +181,17 @@ export default function Room() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [joined]);
 
-  // Live diagnostics: receive fps/res/bitrate + route (P2P vs TURN) for the
-  // focused stream, send fps + limitation reason when sharing.
   useEffect(() => {
-    if (!statsOn) {
-      setStats(null);
-      return;
-    }
-    let prevBytes = 0;
-    let prevTime = 0;
-    const timer = setInterval(async () => {
-      const next = {};
-      const inPc = focusedId ? pcsInRef.current.get(focusedId) : null;
-      if (inPc) {
-        const report = await inPc.getStats();
-        let pair = null;
-        const cands = {};
-        report.forEach((s) => {
-          if (s.type === 'inbound-rtp' && s.kind === 'video') {
-            next.fps = s.framesPerSecond ?? 0;
-            next.res = `${s.frameWidth ?? 0}×${s.frameHeight ?? 0}`;
-            const codec = s.codecId && report.get(s.codecId);
-            if (codec) next.codec = codec.mimeType?.replace('video/', '');
-            if (prevTime) next.kbps = Math.max(0, Math.round(((s.bytesReceived - prevBytes) * 8) / (s.timestamp - prevTime)));
-            prevBytes = s.bytesReceived;
-            prevTime = s.timestamp;
-          }
-          if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') pair = s;
-          if (s.type === 'local-candidate' || s.type === 'remote-candidate') cands[s.id] = s;
-        });
-        if (pair) {
-          const relay = cands[pair.localCandidateId]?.candidateType === 'relay' || cands[pair.remoteCandidateId]?.candidateType === 'relay';
-          next.route = relay ? 'relé (VPS)' : 'direto (P2P)';
-          if (pair.currentRoundTripTime != null) next.rtt = `${Math.round(pair.currentRoundTripTime * 1000)}ms`;
-        }
-      }
-      const outPc = [...pcsOutRef.current.values()][0];
-      if (outPc) {
-        const report = await outPc.getStats();
-        report.forEach((s) => {
-          if (s.type === 'outbound-rtp' && s.kind === 'video') {
-            next.sendFps = s.framesPerSecond ?? 0;
-            next.limit = s.qualityLimitationReason;
-            const codec = s.codecId && report.get(s.codecId);
-            if (codec) next.sendCodec = codec.mimeType?.replace('video/', '');
-          }
-        });
-      }
-      // What the capture itself is producing — if THIS is low, the encoder is
-      // innocent (static content, occluded window, power saving, etc).
-      const track = myStreamRef.current?.getVideoTracks()[0];
-      if (track) next.captureFps = Math.round(track.getSettings().frameRate ?? 0);
-      setStats(next);
-    }, 2000);
-    return () => clearInterval(timer);
-  }, [statsOn, focusedId]);
+    hiddenRef.current = hiddenIds;
+    applySubscriptions();
+  }, [hiddenIds]);
 
   function teardownMedia() {
     clearInterval(thumbTimerRef.current);
     myStreamRef.current?.getTracks().forEach((t) => t.stop());
     myStreamRef.current = null;
-    for (const pc of pcsOutRef.current.values()) pc.close();
-    for (const pc of pcsInRef.current.values()) pc.close();
-    pcsOutRef.current.clear();
-    pcsInRef.current.clear();
+    lkRef.current?.disconnect();
+    lkRef.current = null;
   }
 
   function send(obj) {
@@ -289,8 +202,6 @@ export default function Room() {
     const params = { room: roomId, name: (localStorage.getItem('telinha:name') ?? nameInput).trim() };
     if (ownerKey) params.key = ownerKey;
     if (joinToken) params.j = joinToken;
-    // Legacy CDN URLs still travel as a query param; base64 avatars are sent
-    // as a message after welcome (too big for a URL).
     const avatar = localStorage.getItem('telinha:avatar');
     if (avatar?.startsWith('https://') && !joinToken) params.avatar = avatar;
     wsRef.current = openSignaling(params, handleMessage, (e) => {
@@ -298,19 +209,99 @@ export default function Room() {
       if (e.code === 4004) return setNotice('Sala não encontrada — ou já foi encerrada.');
       if (e.code === 4003) return setNotice('Link de dono inválido.');
       if (e.code === 4001) return; // room closed — handled by the room-closed message
-      // Reconnect: our old participant id is gone, so all pcs are dead.
-      for (const pc of pcsInRef.current.values()) pc.close();
-      pcsInRef.current.clear();
-      for (const pc of pcsOutRef.current.values()) pc.close();
-      pcsOutRef.current.clear();
-      watchSentRef.current.clear();
-      setStreams(() => {
-        const mine = myStreamRef.current;
-        return mine && meRef.current ? { [meRef.current.id]: mine } : {};
-      });
       setTimeout(() => !unmountedRef.current && connect(), 2000);
     });
   }
+
+  // ---------- LiveKit media plane ----------
+
+  function addRemoteTrack(id, track) {
+    setStreams((s) => {
+      const ms = new MediaStream([...(s[id]?.getTracks() ?? []), track.mediaStreamTrack]);
+      return { ...s, [id]: ms };
+    });
+  }
+
+  function removeRemoteTrack(id, track) {
+    setStreams((s) => {
+      const remaining = (s[id]?.getTracks() ?? []).filter((t) => t.id !== track.mediaStreamTrack.id);
+      if (!remaining.length) {
+        const { [id]: _, ...rest } = s;
+        return rest;
+      }
+      return { ...s, [id]: new MediaStream(remaining) };
+    });
+  }
+
+  function applySubscriptions() {
+    const lk = lkRef.current;
+    if (!lk) return;
+    for (const p of lk.remoteParticipants.values()) {
+      const wanted = !hiddenRef.current.has(p.identity);
+      for (const pub of p.trackPublications.values()) {
+        if (pub.setSubscribed) pub.setSubscribed(wanted);
+      }
+    }
+  }
+
+  async function connectLiveKit(room) {
+    lkRef.current?.disconnect();
+    if (!lkUrlRef.current) {
+      setNotice('Servidor de mídia não configurado (LIVEKIT_URL).');
+      return;
+    }
+    const res = await fetch(`/api/rooms/${room}/lk-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: tokenRef.current }),
+    });
+    if (!res.ok) {
+      setNotice('Não consegui autorizar a mídia — recarrega a página.');
+      return;
+    }
+    const { token } = await res.json();
+    const lk = new LKRoom({ adaptiveStream: true, dynacast: true });
+    lkRef.current = lk;
+
+    lk.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
+      addRemoteTrack(participant.identity, track);
+    });
+    lk.on(RoomEvent.TrackUnsubscribed, (track, _pub, participant) => {
+      removeRemoteTrack(participant.identity, track);
+    });
+    lk.on(RoomEvent.TrackPublished, () => applySubscriptions());
+    lk.on(RoomEvent.ParticipantConnected, () => applySubscriptions());
+
+    await lk.connect(lkUrlRef.current, token);
+    applySubscriptions();
+
+    // Reconnected mid-share: republish under the fresh session.
+    if (myStreamRef.current) {
+      await publishTracks(myStreamRef.current);
+      send({ type: 'share-start' });
+    }
+  }
+
+  async function publishTracks(media) {
+    const lk = lkRef.current;
+    if (!lk) return;
+    const [videoTrack] = media.getVideoTracks();
+    const [audioTrack] = media.getAudioTracks();
+    await lk.localParticipant.publishTrack(videoTrack, {
+      source: Track.Source.ScreenShare,
+      simulcast: true,
+      videoEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
+    });
+    if (audioTrack) {
+      await lk.localParticipant.publishTrack(audioTrack, {
+        source: Track.Source.ScreenShareAudio,
+        dtx: false, // game audio has real quiet passages — don't compress them away
+        audioPreset: { maxBitrate: 96_000 },
+      });
+    }
+  }
+
+  // ---------- our signaling (roster/identity/rooms — unchanged) ----------
 
   async function handleMessage(msg) {
     if (msg.type === 'welcome') {
@@ -318,8 +309,6 @@ export default function Room() {
       meRef.current = msg.you;
       tokenRef.current = msg.token;
       setMe(msg.you);
-      // Remember the confirmed identity so a reload rejoins seamlessly —
-      // avatars are kept as client-held base64, never as a CDN dependency.
       localStorage.setItem('telinha:name', msg.you.name);
       if (msg.you.avatarUrl?.startsWith('data:image/')) {
         localStorage.setItem('telinha:avatar', msg.you.avatarUrl);
@@ -336,20 +325,15 @@ export default function Room() {
       }
       setRoomName(msg.name);
       setGame(msg.game);
-      knownIdsRef.current = new Set(msg.participants.map((p) => p.id));
-      watchSentRef.current.clear(); // fresh session — the auto-watch effect re-requests
       setParticipants(msg.participants);
       setSharingIds(msg.sharing);
-      // Joining mid-show: focus (and thereby subscribe to) the first sharer.
       setFocusedId((f) => f ?? msg.sharing.find((id) => id !== msg.you.id) ?? null);
-      if (myStreamRef.current) {
-        // Reconnected mid-share: re-announce; watchers will re-request.
-        setStreams((s) => ({ ...s, [msg.you.id]: myStreamRef.current }));
-        send({ type: 'share-start' });
-      }
+      connectLiveKit(roomId).catch((err) => {
+        console.error('[livekit] connect failed:', err);
+        setNotice('Falha ao conectar no servidor de mídia — recarrega a página.');
+      });
     } else if (msg.type === 'participants') {
       applyRoster(msg.participants, msg.sharing);
-      // Our own identity may have been enriched (e.g. avatar handover).
       const mine = msg.participants.find((p) => p.id === meRef.current?.id);
       if (mine) {
         meRef.current = mine;
@@ -362,13 +346,6 @@ export default function Room() {
       teardownMedia();
       setStreams({});
       setNotice('Sala encerrada pelo dono. Valeu!');
-    } else if (msg.type === 'watch') {
-      if (myStreamRef.current) await offerTo(msg.from);
-    } else if (msg.type === 'unwatch') {
-      pcsOutRef.current.get(msg.from)?.close();
-      pcsOutRef.current.delete(msg.from);
-    } else if (msg.type === 'signal') {
-      await handleSignal(msg);
     }
   }
 
@@ -376,47 +353,16 @@ export default function Room() {
     const myId = meRef.current?.id;
     const ids = new Set(list.map((p) => p.id));
     const sharingSet = new Set(sharing);
-
-    // People who left: drop their media both ways.
-    for (const gone of knownIdsRef.current) {
-      if (!ids.has(gone)) {
-        pcsOutRef.current.get(gone)?.close();
-        pcsOutRef.current.delete(gone);
-        pcsInRef.current.get(gone)?.close();
-        pcsInRef.current.delete(gone);
-        watchSentRef.current.delete(gone);
-        setHiddenIds((prev) => {
-          if (!prev.has(gone)) return prev;
-          const next = new Set(prev);
-          next.delete(gone);
-          return next;
-        });
-        setStreams((s) => {
-          const { [gone]: _, ...rest } = s;
-          return rest;
-        });
-      }
-    }
-    // Sharers who stopped: drop their inbound stream.
-    for (const [sharerId, pc] of pcsInRef.current) {
-      if (!sharingSet.has(sharerId)) {
-        pc.close();
-        pcsInRef.current.delete(sharerId);
-        watchSentRef.current.delete(sharerId);
-        setStreams((s) => {
-          const { [sharerId]: _, ...rest } = s;
-          return rest;
-        });
-      }
-    }
-
-    knownIdsRef.current = ids;
+    setHiddenIds((prev) => {
+      const next = new Set([...prev].filter((id) => ids.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
     setParticipants(list);
     setSharingIds(sharing);
     setFocusedId((f) => {
       const stillValid = f && sharingSet.has(f) && ids.has(f);
       if (stillValid) return f;
-      if (manualUnfocusRef.current) return null; // respect a deliberate unfocus
+      if (manualUnfocusRef.current) return null;
       const firstOther = sharing.find((id) => id !== myId);
       return firstOther ?? (sharing.length ? sharing[0] : null);
     });
@@ -439,79 +385,16 @@ export default function Room() {
       else next.add(id);
       return next;
     });
-    setFocusedId((f) => (f === id ? null : f)); // hiding what's focused drops focus
+    setFocusedId((f) => (f === id ? null : f));
   }
 
   function tileClick(p, sharingSet) {
     if (!sharingSet.has(p.id)) return;
-    if (hiddenIds.has(p.id)) toggleHide(p.id); // clicking a hidden share re-watches it
+    if (hiddenIds.has(p.id)) toggleHide(p.id);
     focusOn(p.id);
   }
 
-  async function handleSignal(msg) {
-    const myId = meRef.current?.id;
-    if (msg.sharer === myId) {
-      // Answer/candidate for one of my outbound connections.
-      const pc = pcsOutRef.current.get(msg.from);
-      if (!pc) return;
-      if (msg.data.sdp) await pc.setRemoteDescription(msg.data.sdp);
-      else if (msg.data.candidate) await pc.addIceCandidate(msg.data.candidate).catch(() => {});
-      return;
-    }
-    // Inbound: msg.from is the sharer sending me their screen.
-    if (msg.data.sdp) {
-      pcsInRef.current.get(msg.sharer)?.close();
-      const pc = new RTCPeerConnection(rtcRef.current);
-      pcsInRef.current.set(msg.sharer, pc);
-      pc.ontrack = (e) => {
-        setStreams((s) => ({ ...s, [msg.sharer]: e.streams[0] }));
-      };
-      pc.onicecandidate = (e) => {
-        if (e.candidate) send({ type: 'signal', to: msg.sharer, sharer: msg.sharer, data: { candidate: e.candidate } });
-      };
-      await pc.setRemoteDescription(msg.data.sdp);
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      send({ type: 'signal', to: msg.sharer, sharer: msg.sharer, data: { sdp: pc.localDescription } });
-    } else if (msg.data.candidate) {
-      await pcsInRef.current.get(msg.sharer)?.addIceCandidate(msg.data.candidate).catch(() => {});
-    }
-  }
-
-  async function offerTo(peerId) {
-    pcsOutRef.current.get(peerId)?.close();
-    const pc = new RTCPeerConnection(rtcRef.current);
-    pcsOutRef.current.set(peerId, pc);
-    for (const track of myStreamRef.current.getTracks()) {
-      if (track.kind === 'video') {
-        const tr = pc.addTransceiver(track, {
-          direction: 'sendonly',
-          streams: [myStreamRef.current],
-          sendEncodings: [{ maxBitrate: 10_000_000 }],
-        });
-        // Prefer H264 (hardware-encoded on nearly every GPU → real 1080p60),
-        // then VP9 (better quality-per-bit but software-encoded and slow).
-        try {
-          const rank = (c) => (c.mimeType === 'video/H264' ? 0 : c.mimeType === 'video/VP9' ? 1 : 2);
-          const codecs = [...RTCRtpSender.getCapabilities('video').codecs].sort((a, b) => rank(a) - rank(b));
-          tr.setCodecPreferences(codecs);
-          const sp = tr.sender.getParameters();
-          sp.degradationPreference = 'maintain-framerate'; // games: drop pixels, never frames
-          await tr.sender.setParameters(sp);
-        } catch {
-          // codec/degradation preferences are best-effort
-        }
-      } else {
-        pc.addTransceiver(track, { direction: 'sendonly', streams: [myStreamRef.current] });
-      }
-    }
-    pc.onicecandidate = (e) => {
-      if (e.candidate) send({ type: 'signal', to: peerId, sharer: meRef.current.id, data: { candidate: e.candidate } });
-    };
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    send({ type: 'signal', to: peerId, sharer: meRef.current.id, data: { sdp: pc.localDescription } });
-  }
+  // ---------- capture / share ----------
 
   async function captureScreen() {
     const base = {
@@ -520,16 +403,14 @@ export default function Room() {
         height: { ideal: 1080, max: 1080 },
         frameRate: { ideal: 60, max: 60 },
       },
-      systemAudio: 'include', // surface the audio checkbox whenever the OS allows it
-      surfaceSwitching: 'include', // lets the sharer swap tabs mid-stream via the capture bar
-      selfBrowserSurface: 'exclude', // don't offer the room's own tab (mirror hall)
+      systemAudio: 'include',
+      surfaceSwitching: 'include',
+      selfBrowserSurface: 'exclude',
     };
     try {
-      // audio: true (no processing constraints) — mic-style constraints are a
-      // known failure source for system-audio loopback capture.
       return await navigator.mediaDevices.getDisplayMedia({ ...base, audio: true });
     } catch (err) {
-      if (err?.name === 'NotAllowedError') return null; // user cancelled the picker
+      if (err?.name === 'NotAllowedError') return null;
       console.warn('[share] capture with audio failed:', err?.name, err?.message);
       const why =
         err?.name === 'NotReadableError'
@@ -566,18 +447,32 @@ export default function Room() {
 
     setIAmSharing(true);
     setStreams((s) => ({ ...s, [meRef.current.id]: media }));
-    send({ type: 'share-start' }); // watchers subscribe on demand
+    try {
+      await publishTracks(media);
+    } catch (err) {
+      console.error('[livekit] publish failed:', err);
+      setShareWarning('Falha ao publicar a transmissão — recarrega a página.');
+      stopShare();
+      return;
+    }
+    send({ type: 'share-start' });
     thumbTimerRef.current = setInterval(uploadThumbnail, 15_000);
     setTimeout(uploadThumbnail, 1500);
   }
 
   function stopShare() {
     if (!myStreamRef.current) return;
-    myStreamRef.current.getTracks().forEach((t) => t.stop());
+    const lk = lkRef.current;
+    for (const track of myStreamRef.current.getTracks()) {
+      try {
+        lk?.localParticipant.unpublishTrack(track);
+      } catch {
+        /* already gone */
+      }
+      track.stop();
+    }
     myStreamRef.current = null;
     previewRef.current = null;
-    for (const pc of pcsOutRef.current.values()) pc.close();
-    pcsOutRef.current.clear();
     clearInterval(thumbTimerRef.current);
     send({ type: 'share-stop' });
     setIAmSharing(false);
@@ -592,7 +487,6 @@ export default function Room() {
   async function uploadThumbnail() {
     const pv = previewRef.current;
     if (!myStreamRef.current || !pv?.videoWidth) return;
-    // 1280px wide so previews stay crisp even on big tiles.
     thumbCanvas.width = 1280;
     thumbCanvas.height = Math.round((pv.videoHeight / pv.videoWidth) * 1280);
     thumbCanvas.getContext('2d').drawImage(pv, 0, 0, thumbCanvas.width, thumbCanvas.height);
@@ -605,11 +499,72 @@ export default function Room() {
     }).catch(() => {});
   }
 
+  // ---------- diagnostics ----------
+
+  useEffect(() => {
+    if (!statsOn) {
+      setStats(null);
+      return;
+    }
+    let prevBytes = 0;
+    let prevTime = 0;
+    const timer = setInterval(async () => {
+      const next = {};
+      const lk = lkRef.current;
+      const focusedP = focusedId && lk?.remoteParticipants
+        ? [...lk.remoteParticipants.values()].find((p) => p.identity === focusedId)
+        : null;
+      const inTrack = focusedP
+        ? [...focusedP.videoTrackPublications.values()].find((pub) => pub.track)?.track
+        : null;
+      if (inTrack?.receiver?.getStats) {
+        const report = await inTrack.receiver.getStats();
+        report.forEach((s) => {
+          if (s.type === 'inbound-rtp' && s.kind === 'video') {
+            next.fps = s.framesPerSecond ?? 0;
+            next.res = `${s.frameWidth ?? 0}×${s.frameHeight ?? 0}`;
+            const codec = s.codecId && report.get(s.codecId);
+            if (codec) next.codec = codec.mimeType?.replace('video/', '');
+            if (prevTime) next.kbps = Math.max(0, Math.round(((s.bytesReceived - prevBytes) * 8) / (s.timestamp - prevTime)));
+            prevBytes = s.bytesReceived;
+            prevTime = s.timestamp;
+          }
+          if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded' && s.currentRoundTripTime != null) {
+            next.rtt = `${Math.round(s.currentRoundTripTime * 1000)}ms`;
+          }
+        });
+        next.route = 'SFU';
+      }
+      const outTrack = lk
+        ? [...lk.localParticipant.videoTrackPublications.values()].find((pub) => pub.track)?.track
+        : null;
+      if (outTrack?.sender?.getStats) {
+        const report = await outTrack.sender.getStats();
+        let bestFps = 0;
+        report.forEach((s) => {
+          if (s.type === 'outbound-rtp' && s.kind === 'video') {
+            bestFps = Math.max(bestFps, s.framesPerSecond ?? 0);
+            if (s.qualityLimitationReason && s.qualityLimitationReason !== 'none') next.limit = s.qualityLimitationReason;
+            const codec = s.codecId && report.get(s.codecId);
+            if (codec) next.sendCodec = codec.mimeType?.replace('video/', '');
+          }
+        });
+        next.sendFps = bestFps;
+      }
+      const track = myStreamRef.current?.getVideoTracks()[0];
+      if (track) next.captureFps = Math.round(track.getSettings().frameRate ?? 0);
+      setStats(next);
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [statsOn, focusedId]);
+
+  // ---------- misc actions ----------
+
   async function copyInvite() {
     try {
       await navigator.clipboard.writeText(roomUrl);
     } catch {
-      /* clipboard blocked — nothing sane to do */
+      /* clipboard blocked */
     }
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
@@ -623,14 +578,13 @@ export default function Room() {
     localStorage.setItem('telinha:name', member.name);
     const data = await toDataUri(member.avatarUrl);
     if (data) localStorage.setItem('telinha:avatar', data);
-    else localStorage.setItem('telinha:avatar', member.avatarUrl); // conversion failed — keep the URL
+    else localStorage.setItem('telinha:avatar', member.avatarUrl);
     setNameInput(member.name);
     setJoined(true);
   }
 
   function joinRoom() {
     const name = nameInput.trim();
-    // Typing a DIFFERENT name is choosing a new identity — drop the old pfp.
     if (name && name !== localStorage.getItem('telinha:name')) localStorage.removeItem('telinha:avatar');
     if (name) localStorage.setItem('telinha:name', name);
     setJoined(true);
@@ -640,7 +594,6 @@ export default function Room() {
     if (!window.confirm('Trocar seu nome/foto? Você sai da sala e volta pela tela de entrada.')) return;
     localStorage.removeItem('telinha:name');
     localStorage.removeItem('telinha:avatar');
-    // Drop the personalized token from the URL so it can't override the new identity.
     if (joinToken) {
       setJoinToken('');
       window.history.replaceState(null, '', `/room/${roomId}${ownerKey ? `?key=${ownerKey}` : ''}`);
@@ -651,11 +604,9 @@ export default function Room() {
     setMe(null);
     setFocusedId(null);
     setIAmSharing(false);
-    prevFocusRef.current = null;
     meRef.current = null;
-    knownIdsRef.current = new Set();
     setNameInput('');
-    setJoined(false); // the join effect's cleanup closes ws + media
+    setJoined(false);
   }
 
   // ---------- render ----------
@@ -762,8 +713,6 @@ export default function Room() {
 
       <main className="flex-1 min-h-0 px-3 pb-2">
         {focused ? (
-          // Discord-style focus: big stream + participants in a real side
-          // column (bottom row on narrow screens) — nobody gets hidden.
           <div className="h-full flex flex-col sm:flex-row gap-2">
             <Tile
               p={focused}
@@ -825,7 +774,7 @@ export default function Room() {
             {stats.fps != null &&
               `↓ ${stats.fps}fps ${stats.res} ${stats.codec ?? ''} ${stats.kbps ?? '…'}kbps · ${stats.route ?? '…'} ${stats.rtt ?? ''}`}
             {stats.sendFps != null &&
-              `${stats.fps != null ? '  |  ' : ''}↑ ${stats.sendFps}fps ${stats.sendCodec ?? ''}${stats.captureFps ? ` (captura ${stats.captureFps}fps)` : ''}${stats.limit && stats.limit !== 'none' ? ` — limitado por ${stats.limit === 'cpu' ? 'CPU (encoder)' : stats.limit === 'bandwidth' ? 'banda' : stats.limit}` : ''}`}
+              `${stats.fps != null ? '  |  ' : ''}↑ ${stats.sendFps}fps ${stats.sendCodec ?? ''}${stats.captureFps ? ` (captura ${stats.captureFps}fps)` : ''}${stats.limit ? ` — limitado por ${stats.limit === 'cpu' ? 'CPU (encoder)' : stats.limit === 'bandwidth' ? 'banda' : stats.limit}` : ''}`}
             {stats.fps == null && stats.sendFps == null && 'sem streams ativos'}
           </code>
         </div>
@@ -895,9 +844,6 @@ function Tile({ p, stream, isMe, sharing = false, focused = false, small = false
   const avatarColor = useAvatarColor(p.avatarUrl, p.color);
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
 
-  // Attach and actively play. If the browser blocks unmuted autoplay (e.g.
-  // auto-rejoin means zero interaction yet), fall back to muted playback and
-  // surface a click-to-unmute prompt instead of silent black.
   useEffect(() => {
     const v = videoRef.current;
     if (!v || !stream) return;
@@ -910,7 +856,6 @@ function Tile({ p, stream, isMe, sharing = false, focused = false, small = false
     });
   }, [stream]);
 
-  // Audio policy: only the focused stream is audible, at its remembered volume.
   useEffect(() => {
     if (videoRef.current) videoRef.current.volume = volume;
   }, [volume, stream]);
@@ -925,7 +870,7 @@ function Tile({ p, stream, isMe, sharing = false, focused = false, small = false
     setAutoplayBlocked(false);
   }
 
-  const hasVideo = !!stream;
+  const hasVideo = !!stream && stream.getVideoTracks().length > 0;
   const clickable = (sharing || hasVideo) && !focused;
   return (
     <div
