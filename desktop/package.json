@@ -1,0 +1,15 @@
+{
+  "name": "telinha-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop shell for telinha: no capture bar, Discord-style source picker with game highlighting, system loopback audio.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:local": "cross-env TELINHA_URL=http://localhost:3000 electron ."
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "electron": "^33.0.0"
+  }
+}

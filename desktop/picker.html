@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <title>Compartilhar — telinha</title>
+    <style>
+      * { box-sizing: border-box; margin: 0; }
+      body {
+        background: #1e1f22;
+        color: #dbdee1;
+        font-family: 'Segoe UI', system-ui, sans-serif;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        padding: 16px;
+        user-select: none;
+      }
+      h1 { font-size: 15px; color: #f2f3f5; margin-bottom: 12px; }
+      .grid {
+        flex: 1;
+        overflow-y: auto;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+        align-content: start;
+      }
+      .src {
+        background: #2b2d31;
+        border: 2px solid #3f4147;
+        border-radius: 10px;
+        padding: 8px;
+        cursor: pointer;
+        text-align: left;
+      }
+      .src:hover, .src:focus { border-color: #5865f2; outline: none; }
+      .src img.thumb {
+        width: 100%;
+        aspect-ratio: 16/9;
+        object-fit: cover;
+        border-radius: 6px;
+        background: #000;
+      }
+      .src .meta { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+      .src img.icon { width: 16px; height: 16px; }
+      .src .name {
+        font-size: 12px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        flex: 1;
+      }
+      .badge {
+        background: #23a55a;
+        color: #fff;
+        font-size: 10px;
+        font-weight: 700;
+        padding: 2px 6px;
+        border-radius: 4px;
+        flex: none;
+      }
+      .footer { display: flex; align-items: center; gap: 12px; padding-top: 14px; }
+      label { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+      input[type='checkbox'] { accent-color: #5865f2; width: 16px; height: 16px; }
+      .spacer { flex: 1; }
+      button.cancel {
+        background: #383a40;
+        color: #f2f3f5;
+        border: 0;
+        border-radius: 8px;
+        padding: 8px 16px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      button.cancel:hover { background: #404249; }
+      .hint { font-size: 11px; color: #949ba4; }
+    </style>
+  </head>
+  <body>
+    <h1>O que você quer compartilhar?</h1>
+    <div class="grid" id="grid"></div>
+    <div class="footer">
+      <label>
+        <input type="checkbox" id="audio" checked />
+        incluir áudio do sistema
+      </label>
+      <span class="hint" id="audio-hint"></span>
+      <span class="spacer"></span>
+      <button class="cancel" id="cancel">Cancelar (Esc)</button>
+    </div>
+    <script>
+      const grid = document.getElementById('grid');
+      const audioBox = document.getElementById('audio');
+
+      if (navigator.platform.toLowerCase().includes('win') === false) {
+        audioBox.checked = false;
+        audioBox.disabled = true;
+        document.getElementById('audio-hint').textContent = '(áudio do sistema: só no Windows)';
+      }
+
+      window.picker.onSources((sources) => {
+        // Screens first, then likely games, then everything else.
+        sources.sort((a, b) => (b.kind === 'screen') - (a.kind === 'screen') || b.game - a.game);
+        for (const s of sources) {
+          const btn = document.createElement('button');
+          btn.className = 'src';
+          btn.innerHTML = `
+            <img class="thumb" alt="" />
+            <div class="meta">
+              ${s.icon ? '<img class="icon" alt="" />' : ''}
+              <span class="name"></span>
+              ${s.game ? '<span class="badge">🎮 jogo</span>' : s.kind === 'screen' ? '<span class="badge" style="background:#5865f2">tela</span>' : ''}
+            </div>`;
+          btn.querySelector('.thumb').src = s.thumb ?? '';
+          if (s.icon) btn.querySelector('.icon').src = s.icon;
+          btn.querySelector('.name').textContent = s.name;
+          btn.onclick = () => window.picker.choose(s.id, audioBox.checked);
+          grid.appendChild(btn);
+        }
+      });
+
+      document.getElementById('cancel').onclick = () => window.picker.cancel();
+      window.addEventListener('keydown', (e) => e.key === 'Escape' && window.picker.cancel());
+    </script>
+  </body>
+</html>
