@@ -3,9 +3,9 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { fetchRtcConfig, openSignaling, isStale, STALE_PAGE_MSG } from '../api.js';
 import Logo from '../components/Logo.jsx';
 import {
-  IconCheck, IconCrown, IconGamepad, IconLink, IconLogout, IconMonitor,
+  IconCheck, IconCrown, IconEye, IconEyeOff, IconGamepad, IconLink, IconLogout, IconMonitor,
   IconPip, IconScreenShare, IconStop, IconVolume, IconVolumeOff, IconX,
-} from '../components/icons.jsx'; // (Tile also uses IconX/IconVolume for voltar + ativar som)
+} from '../components/icons.jsx';
 
 // Best-fit tile width (Discord-style): try every column count, keep the
 // largest tile that still fits everyone in the container at 16:9.
@@ -114,8 +114,8 @@ export default function Room() {
   const thumbTimerRef = useRef(null);
   const unmountedRef = useRef(false);
   const gridRef = useRef(null);
-  const prevFocusRef = useRef(null);
   const manualUnfocusRef = useRef(false); // user chose the grid — don't yank focus back
+  const watchSentRef = useRef(new Set()); // sharers we've asked to send to us
 
   // --- UI state ---
   const [nameInput, setNameInput] = useState(localStorage.getItem('telinha:name') ?? '');
@@ -133,6 +133,7 @@ export default function Room() {
   const [streams, setStreams] = useState({}); // sharerId -> MediaStream (only who we watch + own preview)
   const [iAmSharing, setIAmSharing] = useState(false);
   const [focusedId, setFocusedId] = useState(null);
+  const [hiddenIds, setHiddenIds] = useState(() => new Set()); // sharers this user chose not to watch
   const [globalMuted, setGlobalMuted] = useState(false);
   const [volumes, setVolumes] = useState({}); // sharerId -> 0..1, remembered per person
   const [game, setGame] = useState(null);
@@ -143,14 +144,32 @@ export default function Room() {
   const roomUrl = `${window.location.origin}/room/${roomId}`;
   const gridSize = useElementSize(gridRef, focusedId != null);
 
-  // Refresh cadence for "shared but not focused" tile previews (the
-  // screenshots sharers upload for the Discord embed).
-  const [thumbTick, setThumbTick] = useState(0);
+  // Live tiles: automatically watch every sharer this user hasn't hidden.
+  // Focus is pure layout (size + audio); the eye button opts out per person.
   useEffect(() => {
-    if (!joined) return;
-    const t = setInterval(() => setThumbTick((n) => n + 1), 30_000);
-    return () => clearInterval(t);
-  }, [joined]);
+    const myId = meRef.current?.id;
+    if (!myId) return;
+    const want = new Set(sharingIds.filter((id) => id !== myId && !hiddenIds.has(id)));
+    for (const id of want) {
+      if (!watchSentRef.current.has(id)) {
+        watchSentRef.current.add(id);
+        send({ type: 'watch', to: id });
+      }
+    }
+    for (const id of [...watchSentRef.current]) {
+      if (!want.has(id)) {
+        watchSentRef.current.delete(id);
+        send({ type: 'unwatch', to: id });
+        pcsInRef.current.get(id)?.close();
+        pcsInRef.current.delete(id);
+        setStreams((s) => {
+          const { [id]: _, ...rest } = s;
+          return rest;
+        });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sharingIds, hiddenIds, me]);
 
   useEffect(() => {
     document.title = `${roomName} — telinha`;
@@ -194,26 +213,6 @@ export default function Room() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [joined]);
 
-  // Subscription model: we download at most ONE remote stream — the focused
-  // one. Changing focus unsubscribes from the old sharer and asks the new one
-  // to start sending.
-  useEffect(() => {
-    const myId = meRef.current?.id;
-    const prev = prevFocusRef.current;
-    if (prev === focusedId) return;
-    if (prev && prev !== myId) {
-      send({ type: 'unwatch', to: prev });
-      pcsInRef.current.get(prev)?.close();
-      pcsInRef.current.delete(prev);
-      setStreams((s) => {
-        const { [prev]: _, ...rest } = s;
-        return rest;
-      });
-    }
-    if (focusedId && focusedId !== myId) send({ type: 'watch', to: focusedId });
-    prevFocusRef.current = focusedId;
-  }, [focusedId]);
-
   function teardownMedia() {
     clearInterval(thumbTimerRef.current);
     myStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -246,7 +245,7 @@ export default function Room() {
       pcsInRef.current.clear();
       for (const pc of pcsOutRef.current.values()) pc.close();
       pcsOutRef.current.clear();
-      prevFocusRef.current = null;
+      watchSentRef.current.clear();
       setStreams(() => {
         const mine = myStreamRef.current;
         return mine && meRef.current ? { [meRef.current.id]: mine } : {};
@@ -280,6 +279,7 @@ export default function Room() {
       setRoomName(msg.name);
       setGame(msg.game);
       knownIdsRef.current = new Set(msg.participants.map((p) => p.id));
+      watchSentRef.current.clear(); // fresh session — the auto-watch effect re-requests
       setParticipants(msg.participants);
       setSharingIds(msg.sharing);
       // Joining mid-show: focus (and thereby subscribe to) the first sharer.
@@ -326,6 +326,13 @@ export default function Room() {
         pcsOutRef.current.delete(gone);
         pcsInRef.current.get(gone)?.close();
         pcsInRef.current.delete(gone);
+        watchSentRef.current.delete(gone);
+        setHiddenIds((prev) => {
+          if (!prev.has(gone)) return prev;
+          const next = new Set(prev);
+          next.delete(gone);
+          return next;
+        });
         setStreams((s) => {
           const { [gone]: _, ...rest } = s;
           return rest;
@@ -337,6 +344,7 @@ export default function Room() {
       if (!sharingSet.has(sharerId)) {
         pc.close();
         pcsInRef.current.delete(sharerId);
+        watchSentRef.current.delete(sharerId);
         setStreams((s) => {
           const { [sharerId]: _, ...rest } = s;
           return rest;
@@ -364,6 +372,22 @@ export default function Room() {
   function unfocus() {
     manualUnfocusRef.current = true;
     setFocusedId(null);
+  }
+
+  function toggleHide(id) {
+    setHiddenIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+    setFocusedId((f) => (f === id ? null : f)); // hiding what's focused drops focus
+  }
+
+  function tileClick(p, sharingSet) {
+    if (!sharingSet.has(p.id)) return;
+    if (hiddenIds.has(p.id)) toggleHide(p.id); // clicking a hidden share re-watches it
+    focusOn(p.id);
   }
 
   async function handleSignal(msg) {
@@ -429,7 +453,11 @@ export default function Room() {
 
   async function captureScreen() {
     const base = {
-      video: { frameRate: { ideal: 60 }, width: { max: 1920 }, height: { max: 1080 } },
+      video: {
+        width: { ideal: 1920, max: 1920 },
+        height: { ideal: 1080, max: 1080 },
+        frameRate: { ideal: 60, max: 60 },
+      },
       systemAudio: 'include', // surface the audio checkbox whenever the OS allows it
       surfaceSwitching: 'include', // lets the sharer swap tabs mid-stream via the capture bar
       selfBrowserSurface: 'exclude', // don't offer the room's own tab (mirror hall)
@@ -682,6 +710,7 @@ export default function Room() {
               focused
               muted={globalMuted}
               volume={focusedVolume}
+              onToggleHide={() => toggleHide(focused.id)}
               onClick={unfocus}
               className="flex-1 min-h-0 tile-focused"
             />
@@ -696,8 +725,9 @@ export default function Room() {
                   sharing={sharingSet.has(p.id)}
                   muted
                   small
-                  previewUrl={sharingSet.has(p.id) && !streams[p.id] && p.id !== myId ? `/thumbs/${roomId}/${p.id}.jpg?t=${thumbTick}` : null}
-                  onClick={() => sharingSet.has(p.id) && focusOn(p.id)}
+                  hidden={hiddenIds.has(p.id)}
+                  onToggleHide={() => toggleHide(p.id)}
+                  onClick={() => tileClick(p, sharingSet)}
                   className="w-44 sm:w-full"
                 />
               ))}
@@ -717,8 +747,9 @@ export default function Room() {
                 isMe={p.id === myId}
                 sharing={sharingSet.has(p.id)}
                 muted
-                previewUrl={sharingSet.has(p.id) && !streams[p.id] && p.id !== myId ? `/thumbs/${roomId}/${p.id}.jpg?t=${thumbTick}` : null}
-                onClick={() => sharingSet.has(p.id) && focusOn(p.id)}
+                hidden={hiddenIds.has(p.id)}
+                onToggleHide={() => toggleHide(p.id)}
+                onClick={() => tileClick(p, sharingSet)}
                 style={{ width: `${tilePx}px` }}
               />
             ))}
@@ -779,7 +810,7 @@ export default function Room() {
   );
 }
 
-function Tile({ p, stream, isMe, sharing = false, focused = false, small = false, muted, volume = 1, previewUrl = null, onClick, className = '', style }) {
+function Tile({ p, stream, isMe, sharing = false, focused = false, small = false, muted, volume = 1, hidden = false, onToggleHide, onClick, className = '', style }) {
   const videoRef = useRef(null);
   const avatarColor = useAvatarColor(p.avatarUrl, p.color);
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
@@ -857,35 +888,52 @@ function Tile({ p, stream, isMe, sharing = false, focused = false, small = false
           {isMe && ' (você)'}
         </span>
       </span>
-      {previewUrl && (
-        // "Shared but not focused": ~10s-fresh screenshot preview over the
-        // avatar — looks live without downloading the stream.
-        <img
-          src={previewUrl}
-          alt=""
-          className="absolute inset-0 w-full h-full object-cover"
-          onError={(e) => (e.currentTarget.style.display = 'none')}
-          onLoad={(e) => (e.currentTarget.style.display = '')}
-        />
-      )}
       {sharing && !hasVideo && !isMe && (
         <span className="absolute top-2 right-2 bg-red text-white text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md">
           ao vivo
         </span>
       )}
-      {clickable && !small && (
-        <span className="absolute top-2 left-2 bg-black/70 text-fg3 text-[11px] px-2 py-1 rounded-md">clique pra assistir</span>
+      {hidden && sharing && !small && (
+        <span className="absolute top-2 left-2 bg-black/70 text-fg3 text-[11px] px-2 py-1 rounded-md flex items-center gap-1">
+          <IconEye size={12} /> clique pra voltar a ver
+        </span>
       )}
-      {focused && (
+      {hasVideo && !isMe && !focused && (
         <button
-          className="absolute top-2 right-2 bg-black/70 hover:bg-black/90 text-fg1 text-[12px] px-2.5 py-1.5 rounded-md flex items-center gap-1.5 cursor-pointer border-0"
+          title="Deixar de ver esta transmissão"
+          className="absolute top-2 right-2 bg-black/70 hover:bg-black/90 text-fg1 rounded-md p-1.5 flex items-center cursor-pointer border-0"
           onClick={(e) => {
             e.stopPropagation();
-            onClick?.();
+            onToggleHide?.();
           }}
         >
-          <IconX size={12} /> voltar
+          <IconEyeOff size={13} />
         </button>
+      )}
+      {focused && (
+        <span className="absolute top-2 right-2 flex gap-1.5">
+          {!isMe && (
+            <button
+              title="Deixar de ver esta transmissão"
+              className="bg-black/70 hover:bg-black/90 text-fg1 text-[12px] px-2.5 py-1.5 rounded-md flex items-center gap-1.5 cursor-pointer border-0"
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleHide?.();
+              }}
+            >
+              <IconEyeOff size={12} /> não ver
+            </button>
+          )}
+          <button
+            className="bg-black/70 hover:bg-black/90 text-fg1 text-[12px] px-2.5 py-1.5 rounded-md flex items-center gap-1.5 cursor-pointer border-0"
+            onClick={(e) => {
+              e.stopPropagation();
+              onClick?.();
+            }}
+          >
+            <IconX size={12} /> voltar
+          </button>
+        </span>
       )}
       {focused && autoplayBlocked && !isMe && (
         <button
