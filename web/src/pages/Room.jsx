@@ -315,8 +315,11 @@ export default function Room() {
     const [audioTrack] = media.getAudioTracks();
     await lk.localParticipant.publishTrack(videoTrack, {
       source: Track.Source.ScreenShare,
-      simulcast: true,
-      videoCodec: 'h264', // hardware-encoded on virtually every GPU → real 60fps
+      // No simulcast: encoding multiple layers pushes Chrome off the hardware
+      // H264 path (software = ~15fps at 1080p). One stream = one guaranteed
+      // hardware session at 1080p60 — Discord ships the same trade-off.
+      simulcast: false,
+      videoCodec: 'h264',
       videoEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
     });
     if (audioTrack) {
