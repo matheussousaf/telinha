@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Room as LKRoom, RoomEvent, Track } from 'livekit-client';
+import { Room as LKRoom, RoomEvent, Track, VideoQuality } from 'livekit-client';
 import { fetchRtcConfig, openSignaling, isStale, STALE_PAGE_MSG } from '../api.js';
 import Logo from '../components/Logo.jsx';
 import {
@@ -242,7 +242,29 @@ export default function Room() {
         if (pub.setSubscribed) pub.setSubscribed(wanted);
       }
     }
+    applyQuality();
   }
+
+  const focusedIdRef = useRef(null);
+
+  // Explicit simulcast layer selection: the focused stream gets the top layer
+  // (1080p60), everything in tiles sips the low one.
+  function applyQuality() {
+    const lk = lkRef.current;
+    if (!lk) return;
+    for (const p of lk.remoteParticipants.values()) {
+      const quality = p.identity === focusedIdRef.current ? VideoQuality.HIGH : VideoQuality.LOW;
+      for (const pub of p.videoTrackPublications.values()) {
+        if (pub.isSubscribed && pub.setVideoQuality) pub.setVideoQuality(quality);
+      }
+    }
+  }
+
+  useEffect(() => {
+    focusedIdRef.current = focusedId;
+    applyQuality();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusedId]);
 
   async function connectLiveKit(room) {
     lkRef.current?.disconnect();
@@ -260,11 +282,15 @@ export default function Room() {
       return;
     }
     const { token } = await res.json();
-    const lk = new LKRoom({ adaptiveStream: true, dynacast: true });
+    // adaptiveStream is off: it sizes quality by elements LiveKit attached,
+    // but we drive our own <video> elements — so we pick layers explicitly
+    // (focused = HIGH, tiles = LOW) in applyQuality().
+    const lk = new LKRoom({ adaptiveStream: false, dynacast: true });
     lkRef.current = lk;
 
     lk.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
       addRemoteTrack(participant.identity, track);
+      applyQuality();
     });
     lk.on(RoomEvent.TrackUnsubscribed, (track, _pub, participant) => {
       removeRemoteTrack(participant.identity, track);
@@ -290,6 +316,7 @@ export default function Room() {
     await lk.localParticipant.publishTrack(videoTrack, {
       source: Track.Source.ScreenShare,
       simulcast: true,
+      videoCodec: 'h264', // hardware-encoded on virtually every GPU → real 60fps
       videoEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
     });
     if (audioTrack) {
