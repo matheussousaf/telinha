@@ -32,6 +32,9 @@ fi
 
 cat > /etc/caddy/Caddyfile <<EOF
 $DOMAIN {
+    handle_path /livekit* {
+        reverse_proxy localhost:7880
+    }
     reverse_proxy localhost:3000
 }
 EOF
@@ -63,6 +66,43 @@ LOCAL_IP=$(hostname -I | awk '{print $1}')
 sed -i 's/^#\?TURNSERVER_ENABLED=.*/TURNSERVER_ENABLED=1/' /etc/default/coturn 2>/dev/null || true
 systemctl enable --now coturn
 systemctl restart coturn
+
+# --- LiveKit SFU (media server) ---
+if ! command -v livekit-server >/dev/null; then
+  curl -sL https://github.com/livekit/livekit/releases/download/v1.13.5/livekit_1.13.5_linux_amd64.tar.gz | tar xz -C /usr/local/bin livekit-server
+fi
+if [ ! -f /etc/livekit.yaml ]; then
+  LK_KEY="LK$(head -c 16 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 12)"
+  LK_SECRET=$(head -c 48 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 40)
+  {
+    echo "port: 7880"
+    echo "rtc:"
+    echo "  port_range_start: 50000"
+    echo "  port_range_end: 60000"
+    echo "  tcp_port: 7881"
+    echo "  use_external_ip: true"
+    echo "keys:"
+    echo "  $LK_KEY: $LK_SECRET"
+  } > /etc/livekit.yaml
+  chmod 600 /etc/livekit.yaml
+  sed -i '/^LIVEKIT_/d' "$ENV_FILE"
+  printf 'LIVEKIT_URL=wss://%s/livekit\nLIVEKIT_API_KEY=%s\nLIVEKIT_API_SECRET=%s\n' "$DOMAIN" "$LK_KEY" "$LK_SECRET" >> "$ENV_FILE"
+fi
+cat > /etc/systemd/system/livekit.service <<'EOF'
+[Unit]
+Description=LiveKit SFU
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/livekit-server --config /etc/livekit.yaml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now livekit
 
 # --- app user + env ---
 id -u telinha &>/dev/null || useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin telinha
@@ -106,7 +146,9 @@ ufw allow 80/tcp
 ufw allow 443/tcp
 ufw allow 3478/tcp
 ufw allow 3478/udp
+ufw allow 7881/tcp
 ufw allow 49152:65535/udp
+ufw allow 50000:60000/udp
 ufw --force enable
 
 echo
