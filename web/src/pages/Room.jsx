@@ -334,7 +334,10 @@ export default function Room() {
       // hardware session at 1080p60 — Discord ships the same trade-off.
       simulcast: false,
       videoCodec: 'h264',
-      videoEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
+      // NOTE: screen-share sources read screenShareEncoding — videoEncoding is
+      // for cameras and gets ignored here, silently falling back to LiveKit's
+      // default h1080fps15 preset (the mysterious "locked 15fps").
+      screenShareEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
     });
     if (audioTrack) {
       await lk.localParticipant.publishTrack(audioTrack, {
